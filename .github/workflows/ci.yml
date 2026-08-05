@@ -1,0 +1,143 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  generator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run strict Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --all-features --locked
+
+      - name: Generate fixture Pages artifact
+        run: >-
+          cargo run --locked --bin berlin-times -- generate
+          --output _site
+          --public-base-url https://pr0me.github.io/trmnl-apps/
+          --fixture apps/berlin-times/generator/fixtures/valid-research.json
+          --fixture-image apps/berlin-times/generator/fixtures/lead.ppm
+          --at 2026-08-05T04:15:00Z
+
+      - name: Validate published interface
+        run: |
+          test "$(jq '.schema_version' _site/edition.json)" = "1"
+          test "$(jq '.stories | length' _site/edition.json)" = "6"
+          test "$(find _site/assets -maxdepth 1 -name 'lead-*.jpg' | wc -l)" = "1"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fixture-pages
+          path: _site
+
+  plugin:
+    name: Plugin render (${{ matrix.copy }})
+    strategy:
+      fail-fast: false
+      matrix:
+        copy:
+          - short
+          - typical
+          - maximum
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Prepare copy fixture
+        env:
+          COPY_VARIANT: ${{ matrix.copy }}
+        run: |
+          fixture=apps/berlin-times/generator/fixtures/valid-research.json
+          if [[ "$COPY_VARIANT" = "typical" ]]; then
+            cp "$fixture" /tmp/berlin-times-research.json
+            exit 0
+          fi
+          jq --arg variant "$COPY_VARIANT" --slurpfile variants apps/berlin-times/plugin/test/copy-variants.json '
+            .edition.stories |= (to_entries | map(
+              .value.headline = $variants[0][$variant].headlines[.key] |
+              .value.summary = $variants[0][$variant].summaries[.key] |
+              .value
+            ))
+          ' "$fixture" >/tmp/berlin-times-research.json
+
+      - name: Generate local plugin assets
+        run: >-
+          cargo run --locked --bin berlin-times -- generate
+          --output _site
+          --public-base-url https://pr0me.github.io/trmnl-apps/
+          --fixture /tmp/berlin-times-research.json
+          --fixture-image apps/berlin-times/generator/fixtures/lead.ppm
+          --at 2026-08-05T04:15:00Z
+
+      - name: Serve local plugin assets
+        run: |
+          nohup python3 apps/berlin-times/plugin/test/fixture_server.py _site --plugin-build apps/berlin-times/plugin/_build >/tmp/berlin-times-http.log 2>&1 &
+          for _ in {1..20}; do
+            if curl --fail --silent http://localhost:8000/edition.json >/dev/null; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          cat /tmp/berlin-times-http.log
+          exit 1
+
+      - name: Lint TRMNL plugin
+        run: >-
+          docker run --rm
+          -v "$PWD/apps/berlin-times/plugin:/plugin"
+          trmnl/trmnlp:latest lint
+
+      - name: Render TRMNL X fixture
+        run: >-
+          docker run --rm
+          --add-host=host.docker.internal:host-gateway
+          -v "$PWD/apps/berlin-times/plugin:/plugin"
+          trmnl/trmnlp:latest build --quiet --png
+          --width 1872 --height 1404 --color-depth 4
+
+      - name: Verify rendered layout
+        env:
+          LAYOUT_URL: http://host.docker.internal:8000/__plugin__/full.html
+        run: >-
+          docker run --rm
+          --add-host=host.docker.internal:host-gateway
+          -e LAYOUT_URL
+          --entrypoint /usr/local/bin/ruby
+          -v "$PWD/apps/berlin-times/plugin:/plugin"
+          trmnl/trmnlp:latest test/layout_test.rb
+
+      - name: Verify render dimensions and palette
+        run: |
+          read -r width height colors <<< "$(docker run --rm --entrypoint magick -v "$PWD/apps/berlin-times/plugin/_build:/images" trmnl/trmnlp:latest identify -format '%w %h %k' /images/full.png)"
+          test "$width" = "1872"
+          test "$height" = "1404"
+          test "$colors" -le 16
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: berlin-times-render-${{ matrix.copy }}
+          path: |
+            apps/berlin-times/plugin/_build/*.png
+            apps/berlin-times/plugin/test/golden/${{ matrix.copy }}.png

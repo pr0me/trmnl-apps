@@ -1,0 +1,13 @@
+apnews.com
+bbc.com
+bbc.co.uk
+bloomberg.com
+deutschlandfunk.de
+dw.com
+ft.com
+nytimes.com
+rbb24.de
+reuters.com
+tagesschau.de
+wsj.com
+

@@ -1,0 +1,11 @@
+---
+watch:
+  - .trmnlp.yml
+  - src
+time_zone: Europe/Berlin
+custom_fields: {}
+variables:
+  stylesheet_url: http://host.docker.internal:8000/assets/berlin-times.css
+  trmnl:
+    plugin_settings:
+      polling_url: http://host.docker.internal:8000/edition.json

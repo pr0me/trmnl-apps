@@ -1,0 +1,56 @@
+name: Publish Berlin Times edition
+
+on:
+  schedule:
+    - cron: "15 6,18 * * *"
+      timezone: "Europe/Berlin"
+  workflow_dispatch:
+
+concurrency:
+  group: berlin-times-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify generator
+        run: cargo test --workspace --locked
+
+      - name: Generate edition
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: gpt-5.6-terra
+        run: >-
+          cargo run --locked --release --bin berlin-times -- generate
+          --output _site
+          --public-base-url https://pr0me.github.io/trmnl-apps/
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@v4

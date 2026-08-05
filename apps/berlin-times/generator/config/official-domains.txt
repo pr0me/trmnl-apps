@@ -1,0 +1,10 @@
+bafin.de
+berlin.de
+bund.de
+bundesbank.de
+bundesregierung.de
+destatis.de
+ec.europa.eu
+europa.eu
+europarl.europa.eu
+
