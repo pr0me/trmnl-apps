@@ -162,6 +162,7 @@ begin
   image.alpha('off')
   image.write(output)
   TRMNLP::ImageQuantizer.new(depth: 4).call(output)
+  File.chmod(0o644, output)
   puts format('layout valid: six stories, one image, %.2f%% photo area', result['photoArea'].to_f * 100)
 ensure
   driver.quit
