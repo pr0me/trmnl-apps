@@ -14,7 +14,7 @@ jobs:
     if: github.repository == 'pr0me/trmnl-apps' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: main
 
@@ -26,4 +26,3 @@ jobs:
           git add .github/schedule-heartbeat
           git commit -m 'chore: keep scheduled workflows active'
           git push origin main
-
