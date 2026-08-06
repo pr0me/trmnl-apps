@@ -4,12 +4,15 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum GeneratorError {
-    #[error("api request failed: {0}")]
-    Api(String),
     #[error("api returned status {status}: {message}")]
     ApiStatus { status: u16, message: String },
-    #[error("api refused the research request: {0}")]
-    Refusal(String),
+    #[error("exa returned status {status} (request id: {request_id:?}, tag: {tag:?}): {message}")]
+    ExaStatus {
+        status: u16,
+        request_id: Option<String>,
+        tag: Option<String>,
+        message: String,
+    },
     #[error("configuration is invalid: {0}")]
     Config(String),
     #[error("failed to process image: {0}")]

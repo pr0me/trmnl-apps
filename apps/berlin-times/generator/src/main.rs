@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::Context;
-use berlin_times::{DEFAULT_MODEL, GenerateOptions};
+use berlin_times::GenerateOptions;
 use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use tracing_subscriber::EnvFilter;
@@ -35,13 +35,7 @@ struct GenerateArgs {
     fixture_image: Option<PathBuf>,
     #[arg(long)]
     at: Option<DateTime<Utc>>,
-    #[arg(long, env = "OPENAI_MODEL", default_value = DEFAULT_MODEL)]
-    model: String,
-    #[arg(
-        long,
-        env = "OPENAI_API_BASE",
-        default_value = "https://api.openai.com/"
-    )]
+    #[arg(long, env = "EXA_API_BASE", default_value = "https://api.exa.ai/")]
     api_base: Url,
 }
 
@@ -62,9 +56,8 @@ async fn main() -> anyhow::Result<()> {
                 fixture: args.fixture,
                 fixture_image: args.fixture_image,
                 at: args.at.unwrap_or_else(Utc::now),
-                api_key: std::env::var("OPENAI_API_KEY").ok(),
+                api_key: std::env::var("EXA_API_KEY").ok(),
                 api_base: args.api_base,
-                model: args.model,
             };
             berlin_times::generate(&options)
                 .await

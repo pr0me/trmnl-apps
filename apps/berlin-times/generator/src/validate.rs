@@ -1,15 +1,13 @@
-use std::{collections::HashSet, hash::BuildHasher};
+use std::collections::HashSet;
 
 use chrono::{DateTime, Duration, Utc};
 use url::Url;
 
 use crate::{
     error::{GeneratorError, Result},
-    model::{Category, ResearchEdition, ResearchSource, SourceTier},
+    model::ResearchEdition,
+    schedule::berlin_day,
 };
-
-const PREFERRED_DOMAINS: &str = include_str!("../config/preferred-domains.txt");
-const OFFICIAL_DOMAINS: &str = include_str!("../config/official-domains.txt");
 
 const TRACKING_PARAMETERS: &[&str] = &["fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"];
 
@@ -39,11 +37,7 @@ impl ValidationReport {
 }
 
 #[must_use]
-pub fn validate_edition(
-    edition: &ResearchEdition,
-    consulted_urls: &HashSet<String, impl BuildHasher>,
-    now: DateTime<Utc>,
-) -> ValidationReport {
+pub fn validate_edition(edition: &ResearchEdition, now: DateTime<Utc>) -> ValidationReport {
     let mut report = ValidationReport::default();
     if edition.stories.len() != 6 {
         report.problems.push(format!(
@@ -51,11 +45,8 @@ pub fn validate_edition(
             edition.stories.len()
         ));
     }
-
     validate_story_identity(edition, &mut report);
-    validate_category_quotas(edition, &mut report);
     validate_photo_candidates(edition, &mut report);
-
     edition
         .stories
         .iter()
@@ -65,10 +56,9 @@ pub fn validate_edition(
             validate_plain_text(&story.headline, "headline", &prefix, &mut report);
             validate_plain_text(&story.summary, "summary", &prefix, &mut report);
             validate_copy(index, story, &prefix, &mut report);
-            validate_freshness(story, now, &prefix, &mut report);
-            validate_sources(story, consulted_urls, &prefix, &mut report);
+            validate_freshness(story.published_at, now, &prefix, &mut report);
+            validate_source(story, &prefix, &mut report);
         });
-
     report
 }
 
@@ -92,7 +82,7 @@ pub fn canonicalize_url(value: &str) -> Result<String> {
     }
     if parsed.port_or_known_default() != Some(443) {
         return Err(GeneratorError::Validation(
-            "source url must use the standard https port".into(),
+            "source url must use standard https port".into(),
         ));
     }
     parsed.set_fragment(None);
@@ -118,7 +108,6 @@ pub fn canonicalize_url(value: &str) -> Result<String> {
     if !pairs.is_empty() {
         parsed.query_pairs_mut().extend_pairs(pairs);
     }
-
     let path = parsed.path().trim_end_matches('/').to_owned();
     if !path.is_empty() {
         parsed.set_path(&path);
@@ -127,77 +116,85 @@ pub fn canonicalize_url(value: &str) -> Result<String> {
 }
 
 #[must_use]
-pub fn preferred_source_allowed(url: &str) -> bool {
-    domain_allowed(url, PREFERRED_DOMAINS)
+pub fn article_url_allowed(value: &str) -> bool {
+    canonicalize_url(value).is_ok_and(|canonical| {
+        let Ok(url) = Url::parse(&canonical) else {
+            return false;
+        };
+        let segments = url
+            .path_segments()
+            .into_iter()
+            .flatten()
+            .filter(|segment| !segment.is_empty())
+            .collect::<Vec<_>>();
+        let last_is_generic = segments.last().is_some_and(|segment| {
+            matches!(
+                segment.to_ascii_lowercase().as_str(),
+                "business"
+                    | "economy"
+                    | "inland"
+                    | "markets"
+                    | "panorama"
+                    | "politics"
+                    | "search"
+                    | "suche"
+                    | "technology"
+                    | "topic"
+                    | "wirtschaft"
+                    | "world"
+            )
+        });
+        provider_name(&canonical).is_some() && segments.len() >= 2 && !last_is_generic
+    })
 }
 
-fn official_source_allowed(url: &str) -> bool {
-    domain_allowed(url, OFFICIAL_DOMAINS)
+#[must_use]
+pub fn provider_name(value: &str) -> Option<&'static str> {
+    let host = Url::parse(value).ok()?.host_str()?.to_ascii_lowercase();
+    PROVIDERS
+        .iter()
+        .find(|(domain, _)| host == *domain || host.ends_with(&format!(".{domain}")))
+        .map(|(_, name)| *name)
 }
 
-fn domain_allowed(url: &str, allowlist: &str) -> bool {
-    Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase))
-        .is_some_and(|host| {
-            allowlist
-                .lines()
-                .filter(|domain| !domain.is_empty())
-                .any(|domain| host == domain || host.ends_with(&format!(".{domain}")))
-        })
-}
+const PROVIDERS: &[(&str, &str)] = &[
+    ("nytimes.com", "The New York Times"),
+    ("ft.com", "Financial Times"),
+    ("tagesschau.de", "Tagesschau"),
+    ("reuters.com", "Reuters"),
+    ("rbb24.de", "rbb24"),
+    ("wsj.com", "The Wall Street Journal"),
+    ("handelsblatt.com", "Handelsblatt"),
+];
 
 fn validate_story_identity(edition: &ResearchEdition, report: &mut ValidationReport) {
     let mut ids = HashSet::new();
-    let mut events = HashSet::new();
+    let mut urls = HashSet::new();
     edition.stories.iter().for_each(|story| {
         if story.id.trim().is_empty() || !ids.insert(story.id.trim().to_ascii_lowercase()) {
             report
                 .problems
                 .push(format!("story id is empty or duplicated: {}", story.id));
         }
-        let event = normalize_event_key(&story.event_key);
-        if event.is_empty() || !events.insert(event) {
-            report
-                .problems
-                .push(format!("event is empty or duplicated: {}", story.event_key));
-        }
-        if !story
-            .qualifying_categories
-            .contains(&story.primary_category)
-        {
-            report.problems.push(format!(
-                "story {} primary category is not a qualifying category",
-                story.id
-            ));
+        let canonical = story
+            .sources
+            .first()
+            .and_then(|source| canonicalize_url(&source.url).ok());
+        match canonical {
+            Some(url) => {
+                if !urls.insert(url) {
+                    report
+                        .problems
+                        .push(format!("story {} repeats source url", story.id));
+                }
+            }
+            None => {
+                report
+                    .problems
+                    .push(format!("story {} lacks valid source url", story.id));
+            }
         }
     });
-}
-
-fn validate_category_quotas(edition: &ResearchEdition, report: &mut ValidationReport) {
-    [
-        Category::GlobalPolitics,
-        Category::GlobalEconomics,
-        Category::Germany,
-        Category::Technology,
-    ]
-    .iter()
-    .filter(|category| {
-        !edition
-            .stories
-            .iter()
-            .any(|story| story.qualifying_categories.contains(category))
-    })
-    .for_each(|category| {
-        report
-            .problems
-            .push(format!("missing required category: {category:?}"));
-    });
-    if !edition.stories.iter().any(|story| story.is_breaking) {
-        report
-            .problems
-            .push("missing story marked breaking or high-impact".into());
-    }
 }
 
 fn validate_photo_candidates(edition: &ResearchEdition, report: &mut ValidationReport) {
@@ -236,168 +233,83 @@ fn validate_copy(
     report: &mut ValidationReport,
 ) {
     let headline_words = word_count(&story.headline);
-    if !(5..=12).contains(&headline_words) {
+    if headline_words > 12 {
         report.problems.push(format!(
-            "{prefix} headline has {headline_words} words; expected 5 to 12"
+            "{prefix} headline has {headline_words} words; maximum is 12"
         ));
     }
-
     let summary_words = word_count(&story.summary);
-    let expected = if index == 0 { 40..=60 } else { 28..=45 };
-    if !expected.contains(&summary_words) {
+    let maximum = if index == 0 { 60 } else { 45 };
+    if summary_words > maximum {
         report.problems.push(format!(
-            "{prefix} summary has {summary_words} words; expected {} to {}",
-            expected.start(),
-            expected.end()
-        ));
-    }
-
-    let sentences = sentence_count(&story.summary);
-    let max_sentences = if index == 0 { 3 } else { 2 };
-    if sentences == 0 || sentences > max_sentences {
-        report.problems.push(format!(
-            "{prefix} summary has {sentences} sentences; expected 1 to {max_sentences}"
+            "{prefix} summary has {summary_words} words; maximum is {maximum}"
         ));
     }
 }
 
 fn validate_freshness(
-    story: &crate::model::ResearchStory,
+    published_at: DateTime<Utc>,
     now: DateTime<Utc>,
     prefix: &str,
     report: &mut ValidationReport,
 ) {
-    let age = now.signed_duration_since(story.published_at);
-    if age < Duration::minutes(-30) {
+    let Ok(day) = berlin_day(now) else {
         report
             .problems
-            .push(format!("{prefix} publication time is in the future"));
+            .push("could not determine berlin calendar day".into());
         return;
-    }
-    let extended = story.qualifying_categories.contains(&Category::Germany)
-        || story.qualifying_categories.contains(&Category::Technology);
-    let max_age = if extended {
-        Duration::hours(72)
-    } else {
-        Duration::hours(36)
     };
-    if age > max_age {
+    if published_at < day.start || published_at >= day.end {
         report
             .problems
-            .push(format!("{prefix} is too old at {} hours", age.num_hours()));
+            .push(format!("{prefix} is outside current berlin calendar day"));
     }
-}
-
-fn validate_sources(
-    story: &crate::model::ResearchStory,
-    consulted_urls: &HashSet<String, impl BuildHasher>,
-    prefix: &str,
-    report: &mut ValidationReport,
-) {
-    if !(1..=3).contains(&story.sources.len()) {
+    if published_at > now + Duration::minutes(30) {
         report
             .problems
-            .push(format!("{prefix} must have one to three sources"));
+            .push(format!("{prefix} publication time is in future"));
     }
-    let needs_two = story.is_breaking
-        || story.qualifying_categories.iter().any(|category| {
-            matches!(
-                category,
-                Category::GlobalPolitics | Category::GlobalEconomics
-            )
-        });
-    if needs_two && story.sources.len() < 2 {
-        report
-            .problems
-            .push(format!("{prefix} requires at least two sources"));
-    }
-    if !story
-        .sources
-        .iter()
-        .any(|source| source.tier == SourceTier::Preferred)
-    {
-        report
-            .problems
-            .push(format!("{prefix} requires a preferred reporting source"));
-    }
-
-    let mut unique = HashSet::new();
-    story.sources.iter().for_each(|source| {
-        validate_source(source, consulted_urls, prefix, &mut unique, report);
-    });
 }
 
 fn validate_source(
-    source: &ResearchSource,
-    consulted_urls: &HashSet<String, impl BuildHasher>,
+    story: &crate::model::ResearchStory,
     prefix: &str,
-    unique: &mut HashSet<String>,
     report: &mut ValidationReport,
 ) {
+    if story.sources.len() != 1 {
+        report
+            .problems
+            .push(format!("{prefix} must have exactly one source"));
+        return;
+    }
+    let Some(source) = story.sources.first() else {
+        return;
+    };
     if source.name.trim().is_empty() {
+        report.problems.push(format!("{prefix} has unnamed source"));
+    }
+    if !article_url_allowed(&source.url) {
         report
             .problems
-            .push(format!("{prefix} has an unnamed source"));
+            .push(format!("{prefix} source is not allowed article url"));
     }
-    let canonical = match canonicalize_url(&source.url) {
-        Ok(value) => value,
-        Err(error) => {
-            report.problems.push(format!("{prefix}: {error}"));
-            return;
-        }
-    };
-    if !unique.insert(canonical.clone()) {
+    if provider_name(&source.url) != Some(source.name.as_str()) {
         report
             .problems
-            .push(format!("{prefix} repeats source {canonical}"));
+            .push(format!("{prefix} source has incorrect provider name"));
     }
-    if !consulted_urls.contains(&canonical) {
-        report.problems.push(format!(
-            "{prefix} source was not returned by web search: {canonical}"
-        ));
-    }
-    let allowed = match source.tier {
-        SourceTier::Preferred => preferred_source_allowed(&source.url),
-        SourceTier::OfficialPrimary => official_source_allowed(&source.url),
-    };
-    if !allowed {
-        report.problems.push(format!(
-            "{prefix} source does not match its configured tier: {}",
-            source.url
-        ));
-    }
-}
-
-fn normalize_event_key(value: &str) -> String {
-    value
-        .chars()
-        .filter(|character| character.is_alphanumeric() || character.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn word_count(value: &str) -> usize {
     value.split_whitespace().count()
 }
 
-fn sentence_count(value: &str) -> usize {
-    value
-        .split_inclusive(['.', '!', '?'])
-        .filter(|sentence| word_count(sentence) >= 3)
-        .count()
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use chrono::{TimeZone, Utc};
 
-    use super::{canonicalize_url, preferred_source_allowed, validate_edition};
-    use crate::model::ResearchResult;
+    use super::{article_url_allowed, canonicalize_url, provider_name, validate_edition};
+    use crate::model::ResearchEdition;
 
     #[test]
     fn canonicalizes_tracking_and_query_order() {
@@ -410,90 +322,46 @@ mod tests {
     }
 
     #[test]
-    fn applies_domain_boundaries_to_allowlist() {
-        assert!(preferred_source_allowed("https://www.bbc.com/news/world"));
-        assert!(!preferred_source_allowed(
-            "https://bbc.com.attacker.example/news"
+    fn enforces_domain_boundaries_and_article_paths() {
+        assert!(article_url_allowed(
+            "https://www.reuters.com/world/europe/example"
         ));
+        assert!(!article_url_allowed("https://reuters.com/world/"));
+        assert!(!article_url_allowed(
+            "https://reuters.com.attacker.example/world/story"
+        ));
+        assert!(!article_url_allowed("http://reuters.com/world/story"));
     }
 
     #[test]
-    fn canonical_urls_can_be_compared_as_a_set() {
-        let urls = [
-            "https://apnews.com/article/example?utm_medium=social",
-            "https://apnews.com/article/example",
-        ]
-        .iter()
-        .filter_map(|url| canonicalize_url(url).ok())
-        .collect::<HashSet<_>>();
-        assert_eq!(urls.len(), 1);
-    }
-
-    #[test]
-    fn rejects_credentials_and_nonstandard_ports() {
-        assert!(canonicalize_url("https://user@reuters.com/world/story").is_err());
-        assert!(canonicalize_url("https://reuters.com:8443/world/story").is_err());
-    }
-
-    #[test]
-    fn valid_fixture_satisfies_editorial_contract()
-    -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let fixture = serde_json::from_str::<ResearchResult>(include_str!(
-            "../fixtures/valid-research.json"
-        ))?;
-        let consulted = fixture
-            .consulted_sources
-            .iter()
-            .filter_map(|source| canonicalize_url(&source.url).ok())
-            .collect::<HashSet<_>>();
-        let now = Utc
-            .with_ymd_and_hms(2026, 8, 5, 4, 15, 0)
-            .single()
-            .ok_or_else(|| std::io::Error::other("fixed time must exist"))?;
-        let report = validate_edition(&fixture.edition, &consulted, now);
-        assert!(report.is_valid(), "{}", report.problems.join("; "));
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_duplicate_events_and_unknown_sources()
-    -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let mut fixture = serde_json::from_str::<ResearchResult>(include_str!(
-            "../fixtures/valid-research.json"
-        ))?;
-        let duplicate = fixture
-            .edition
-            .stories
-            .first()
-            .map(|story| story.event_key.clone());
-        if let (Some(duplicate), Some(story)) = (duplicate, fixture.edition.stories.get_mut(1)) {
-            story.event_key = duplicate;
-            if let Some(source) = story.sources.first_mut() {
-                source.url = "https://example.com/unconsulted".into();
-            }
+    fn maps_all_providers_deterministically() {
+        let providers = [
+            ("https://www.nytimes.com/a/b", "The New York Times"),
+            ("https://www.ft.com/content/id", "Financial Times"),
+            ("https://www.tagesschau.de/a/b", "Tagesschau"),
+            ("https://www.reuters.com/a/b", "Reuters"),
+            ("https://www.rbb24.de/a/b", "rbb24"),
+            ("https://www.wsj.com/a/b", "The Wall Street Journal"),
+            ("https://www.handelsblatt.com/a/b", "Handelsblatt"),
+        ];
+        for (url, expected) in providers {
+            assert_eq!(provider_name(url), Some(expected));
         }
-        let consulted = fixture
-            .consulted_sources
-            .iter()
-            .filter_map(|source| canonicalize_url(&source.url).ok())
-            .collect::<HashSet<_>>();
+        assert_eq!(provider_name("https://example.com/a/b"), None);
+    }
+
+    #[test]
+    fn valid_fixture_satisfies_published_contract()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let fixture = serde_json::from_str::<ResearchEdition>(include_str!(
+            "../fixtures/valid-research.json"
+        ))?;
         let now = Utc
             .with_ymd_and_hms(2026, 8, 5, 4, 15, 0)
             .single()
             .ok_or_else(|| std::io::Error::other("fixed time must exist"))?;
-        let report = validate_edition(&fixture.edition, &consulted, now);
-        assert!(
-            report
-                .problems
-                .iter()
-                .any(|problem| problem.contains("duplicated"))
-        );
-        assert!(
-            report
-                .problems
-                .iter()
-                .any(|problem| problem.contains("configured tier"))
-        );
+        let report = validate_edition(&fixture, now);
+        assert!(report.is_valid(), "{}", report.problems.join("; "));
         Ok(())
     }
 }

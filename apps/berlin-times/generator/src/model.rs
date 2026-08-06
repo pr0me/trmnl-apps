@@ -14,51 +14,29 @@ pub enum Category {
     World,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceTier {
-    OfficialPrimary,
-    Preferred,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ResearchSource {
     pub name: String,
     pub url: String,
-    pub tier: SourceTier,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ResearchStory {
     pub id: String,
-    pub event_key: String,
     pub primary_category: Category,
-    pub qualifying_categories: Vec<Category>,
     pub is_developing: bool,
-    pub is_breaking: bool,
     pub headline: String,
     pub summary: String,
     pub published_at: DateTime<Utc>,
     pub sources: Vec<ResearchSource>,
+    #[serde(default, skip_serializing)]
+    pub image_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ResearchEdition {
     pub stories: Vec<ResearchStory>,
     pub photo_candidates: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ConsultedSource {
-    #[serde(default)]
-    pub title: String,
-    pub url: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct ResearchResult {
-    pub edition: ResearchEdition,
-    pub consulted_sources: Vec<ConsultedSource>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
