@@ -1,13 +1,12 @@
 pub mod error;
+mod exa;
 pub mod model;
-mod openai;
 mod photo;
 mod schedule;
 mod site;
 pub mod validate;
 
 use std::{
-    collections::HashSet,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -18,12 +17,10 @@ use url::Url;
 
 use crate::{
     error::{GeneratorError, Result, io_error},
-    model::{EditionV1, ResearchResult},
-    openai::{OpenAiClient, ResearchContext},
+    exa::{ExaClient, normalize_and_select},
+    model::{EditionV1, ResearchEdition},
     photo::{SafeHttp, fixture_photo},
 };
-
-pub const DEFAULT_MODEL: &str = "gpt-5.6-terra";
 
 pub struct GenerateOptions {
     pub output: PathBuf,
@@ -33,7 +30,6 @@ pub struct GenerateOptions {
     pub at: DateTime<Utc>,
     pub api_key: Option<String>,
     pub api_base: Url,
-    pub model: String,
 }
 
 /// Generates and atomically publishes complete Berlin Times static edition.
@@ -47,37 +43,19 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
     } else {
         fetch_previous_edition(&options.public_base_url).await
     };
-    let previous_headlines = previous
-        .as_ref()
-        .map(|edition| {
-            edition
-                .stories
-                .iter()
-                .map(|story| story.headline.clone())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
     let research = if let Some(path) = &options.fixture {
         read_fixture(path).await?
     } else {
-        research_live(options, &previous_headlines).await?
+        research_live(options, previous.as_ref()).await?
     };
     validate_result(&research, options.at)?;
 
     let photo = if let Some(path) = &options.fixture_image {
         let bytes = tokio::fs::read(path).await.map_err(io_error(path))?;
         let candidate = research
-            .edition
             .photo_candidates
             .first()
-            .and_then(|id| {
-                research
-                    .edition
-                    .stories
-                    .iter()
-                    .find(|story| story.id == *id)
-            })
+            .and_then(|id| research.stories.iter().find(|story| story.id == *id))
             .ok_or_else(|| GeneratorError::Config("fixture has no photo candidate story".into()))?;
         let source = candidate
             .sources
@@ -89,15 +67,11 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
             "--fixture-image is required with --fixture".into(),
         ));
     } else {
-        SafeHttp::new().build_lead_photo(&research.edition).await?
+        SafeHttp::new().build_lead_photo(&research).await?
     };
 
-    let (edition, photo_name) = site::assemble_edition(
-        &research.edition,
-        &photo,
-        &options.public_base_url,
-        options.at,
-    )?;
+    let (edition, photo_name) =
+        site::assemble_edition(&research, &photo, &options.public_base_url, options.at)?;
     site::publish_site(&options.output, &edition, &photo_name, &photo.bytes)?;
     info!(edition_id = %edition.edition_id, output = %options.output.display(), "edition generated");
     Ok(edition)
@@ -105,54 +79,30 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
 
 async fn research_live(
     options: &GenerateOptions,
-    previous_headlines: &[String],
-) -> Result<ResearchResult> {
+    previous: Option<&EditionV1>,
+) -> Result<ResearchEdition> {
     let api_key = options
         .api_key
         .clone()
-        .ok_or_else(|| GeneratorError::Config("OPENAI_API_KEY is required".into()))?;
+        .ok_or_else(|| GeneratorError::Config("exa_api_key is required".into()))?;
     let http = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(180))
+        .timeout(Duration::from_secs(60))
         .build()?;
-    let client = OpenAiClient::new(http, &options.api_base, api_key, options.model.clone())?;
-    let first = client
-        .research(&ResearchContext {
-            now: options.at,
-            previous_headlines,
-            validation_problems: &[],
-        })
-        .await?;
-    let report = validation_report(&first, options.at);
-    if report.is_valid() {
-        return Ok(first);
-    }
-    warn!(problems = %report.problems.join("; "), "research failed semantic validation; retrying once");
-    let second = client
-        .research(&ResearchContext {
-            now: options.at,
-            previous_headlines,
-            validation_problems: &report.problems,
-        })
-        .await?;
-    validate_result(&second, options.at)?;
-    Ok(second)
+    let client = ExaClient::new(http, &options.api_base, api_key)?;
+    let response = client.search(options.at).await?;
+    normalize_and_select(response, options.at, previous)
 }
 
-fn validation_report(research: &ResearchResult, at: DateTime<Utc>) -> validate::ValidationReport {
-    let consulted = research
-        .consulted_sources
-        .iter()
-        .filter_map(|source| validate::canonicalize_url(&source.url).ok())
-        .collect::<HashSet<_>>();
-    validate::validate_edition(&research.edition, &consulted, at)
+fn validation_report(research: &ResearchEdition, at: DateTime<Utc>) -> validate::ValidationReport {
+    validate::validate_edition(research, at)
 }
 
-fn validate_result(research: &ResearchResult, at: DateTime<Utc>) -> Result<()> {
+fn validate_result(research: &ResearchEdition, at: DateTime<Utc>) -> Result<()> {
     validation_report(research, at).into_result()
 }
 
-async fn read_fixture(path: impl AsRef<Path>) -> Result<ResearchResult> {
+async fn read_fixture(path: impl AsRef<Path>) -> Result<ResearchEdition> {
     let path = path.as_ref();
     let bytes = tokio::fs::read(path).await.map_err(io_error(path))?;
     serde_json::from_slice(&bytes).map_err(GeneratorError::from)
@@ -190,7 +140,7 @@ mod tests {
     use tempfile::tempdir;
     use url::Url;
 
-    use super::{DEFAULT_MODEL, GenerateOptions, generate};
+    use super::{GenerateOptions, generate};
 
     #[tokio::test]
     async fn failed_generation_preserves_existing_output()
@@ -213,8 +163,7 @@ mod tests {
             fixture_image: None,
             at,
             api_key: None,
-            api_base: Url::parse("https://api.openai.com/")?,
-            model: DEFAULT_MODEL.into(),
+            api_base: Url::parse("https://api.exa.ai/")?,
         };
 
         assert!(generate(&options).await.is_err());

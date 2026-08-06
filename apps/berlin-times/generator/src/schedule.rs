@@ -11,6 +11,23 @@ const MORNING_MINUTE: u32 = 30;
 const EVENING_HOUR: u32 = 17;
 const EVENING_MINUTE: u32 = 0;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BerlinDay {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+}
+
+pub fn berlin_day(now: DateTime<Utc>) -> Result<BerlinDay> {
+    let date = now.with_timezone(&Berlin).date_naive();
+    let tomorrow = date
+        .succ_opt()
+        .ok_or_else(|| GeneratorError::Config("cannot calculate berlin day boundary".into()))?;
+    Ok(BerlinDay {
+        start: local_time(date, 0, 0)?.with_timezone(&Utc),
+        end: local_time(tomorrow, 0, 0)?.with_timezone(&Utc),
+    })
+}
+
 pub fn edition_name(now: DateTime<Utc>) -> EditionName {
     let local = now.with_timezone(&Berlin);
     if local.hour() < 12 {

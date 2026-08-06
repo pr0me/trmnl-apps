@@ -30,8 +30,7 @@ jobs:
 
       - name: Generate edition
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: gpt-5.6-terra
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
         run: >-
           cargo run --locked --release --bin berlin-times -- generate
           --output _site

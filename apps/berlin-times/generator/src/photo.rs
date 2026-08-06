@@ -33,8 +33,11 @@ pub struct PhotoAsset {
     pub source_page_url: String,
 }
 
-#[derive(Clone, Copy, Default)]
-pub struct SafeHttp;
+#[derive(Clone, Default)]
+pub struct SafeHttp {
+    #[cfg(test)]
+    test_client: Option<reqwest::Client>,
+}
 
 struct Fetched {
     final_url: Url,
@@ -45,7 +48,10 @@ struct Fetched {
 impl SafeHttp {
     #[must_use]
     pub const fn new() -> Self {
-        Self
+        Self {
+            #[cfg(test)]
+            test_client: None,
+        }
     }
 
     pub async fn build_lead_photo(&self, edition: &ResearchEdition) -> Result<PhotoAsset> {
@@ -67,6 +73,18 @@ impl SafeHttp {
             .collect::<Vec<_>>();
 
         for (story, source) in candidates {
+            if let Some(image_url) = story.image_url.as_deref() {
+                match self
+                    .photo_from_image(story, &source.name, &source.url, image_url)
+                    .await
+                {
+                    Ok(photo) => return Ok(photo),
+                    Err(error) => {
+                        warn!(story_id = %story.id, image_url, %error, "Exa image candidate rejected");
+                        failures.push(format!("{} direct image: {error}", story.id));
+                    }
+                }
+            }
             match self
                 .photo_from_source(story, &source.name, &source.url)
                 .await
@@ -79,6 +97,40 @@ impl SafeHttp {
             }
         }
         Err(GeneratorError::NoPhoto(failures.join("; ")))
+    }
+
+    async fn photo_from_image(
+        &self,
+        story: &ResearchStory,
+        source_name: &str,
+        source_url: &str,
+        image_url: &str,
+    ) -> Result<PhotoAsset> {
+        let image_url = Url::parse(image_url)
+            .map_err(|error| GeneratorError::UnsafeUrl(format!("invalid image url: {error}")))?;
+        let image = self
+            .fetch(
+                image_url,
+                MAX_IMAGE_BYTES,
+                "image/jpeg,image/png,image/webp",
+            )
+            .await?;
+        if !image
+            .content_type
+            .as_deref()
+            .is_some_and(|value| value.starts_with("image/"))
+        {
+            return Err(GeneratorError::NoPhoto(
+                "direct resource is not image".into(),
+            ));
+        }
+        Ok(PhotoAsset {
+            bytes: process_image(&image.bytes, true)?,
+            story_id: story.id.clone(),
+            alt: format!("News photograph for {}", story.headline),
+            credit: source_name.into(),
+            source_page_url: source_url.into(),
+        })
     }
 
     async fn photo_from_source(
@@ -127,19 +179,20 @@ impl SafeHttp {
             ));
         }
         let bytes = process_image(&image.bytes, true)?;
-        let credit = meta_content(&document, "property", "og:site_name")
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| source_name.into());
         Ok(PhotoAsset {
             bytes,
             story_id: story.id.clone(),
             alt: format!("News photograph for {}", story.headline),
-            credit,
-            source_page_url: page.final_url.into(),
+            credit: source_name.into(),
+            source_page_url: source_url.into(),
         })
     }
 
     async fn fetch(&self, mut url: Url, limit: usize, accept: &str) -> Result<Fetched> {
+        #[cfg(test)]
+        if let Some(client) = &self.test_client {
+            return fetch_for_test(client, url, limit, accept).await;
+        }
         for redirects in 0..=MAX_REDIRECTS {
             let client = client_for_public_url(&url).await?;
             let response = client
@@ -201,6 +254,42 @@ impl SafeHttp {
         }
         Err(GeneratorError::UnsafeUrl("redirect handling failed".into()))
     }
+}
+
+#[cfg(test)]
+async fn fetch_for_test(
+    client: &reqwest::Client,
+    url: Url,
+    limit: usize,
+    accept: &str,
+) -> Result<Fetched> {
+    let response = client
+        .get(url.clone())
+        .header(header::ACCEPT, accept)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Err(GeneratorError::ApiStatus {
+            status: response.status().as_u16(),
+            message: "photo source request failed".into(),
+        });
+    }
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_ascii_lowercase);
+    let bytes = response.bytes().await?;
+    if bytes.len() > limit {
+        return Err(GeneratorError::NoPhoto(
+            "remote response exceeds size limit".into(),
+        ));
+    }
+    Ok(Fetched {
+        final_url: url,
+        content_type,
+        bytes: bytes.into(),
+    })
 }
 
 pub fn fixture_photo(
@@ -378,9 +467,48 @@ fn is_public_ipv6(address: Ipv6Addr) -> bool {
 mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+    use chrono::{DateTime, Utc};
     use scraper::Html;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
 
-    use super::{is_public_ip, meta_content, process_image};
+    use super::{SafeHttp, is_public_ip, meta_content, process_image};
+    use crate::model::{Category, ResearchEdition, ResearchSource, ResearchStory};
+
+    fn image_bytes() -> Vec<u8> {
+        let mut bytes = b"P6\n640 360\n255\n".to_vec();
+        bytes.resize(bytes.len() + (640 * 360 * 3), 127);
+        bytes
+    }
+
+    fn edition(server: &MockServer, image_path: Option<&str>) -> ResearchEdition {
+        let source_url = format!("{}/article", server.uri());
+        let image_url = image_path.map(|path| format!("{}{path}", server.uri()));
+        ResearchEdition {
+            stories: vec![ResearchStory {
+                id: "test-story".into(),
+                primary_category: Category::World,
+                is_developing: false,
+                headline: "Test story headline".into(),
+                summary: "Test story summary.".into(),
+                published_at: DateTime::<Utc>::UNIX_EPOCH,
+                sources: vec![ResearchSource {
+                    name: "Reuters".into(),
+                    url: source_url,
+                }],
+                image_url,
+            }],
+            photo_candidates: vec!["test-story".into()],
+        }
+    }
+
+    fn test_http() -> SafeHttp {
+        SafeHttp {
+            test_client: Some(reqwest::Client::new()),
+        }
+    }
 
     #[test]
     fn rejects_private_and_documentation_addresses() {
@@ -405,5 +533,91 @@ mod tests {
     fn reports_missing_open_graph_metadata() {
         let document = Html::parse_document("<html><head></head><body></body></html>");
         assert!(meta_content(&document, "property", "og:image").is_none());
+    }
+
+    #[tokio::test]
+    async fn uses_direct_exa_image() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/direct"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "image/x-portable-pixmap")
+                    .set_body_bytes(image_bytes()),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/article"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let photo = test_http()
+            .build_lead_photo(&edition(&server, Some("/direct")))
+            .await?;
+        assert_eq!(photo.story_id, "test-story");
+        assert_eq!(photo.credit, "Reuters");
+        assert!(photo.source_page_url.ends_with("/article"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_open_graph_after_invalid_exa_image()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/invalid"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "text/plain")
+                    .set_body_string("not an image"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/article"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                format!(
+                    "<meta property=\"og:image\" content=\"{}/fallback\">",
+                    server.uri()
+                ),
+                "text/html",
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/fallback"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "image/x-portable-pixmap")
+                    .set_body_bytes(image_bytes()),
+            )
+            .mount(&server)
+            .await;
+
+        let photo = test_http()
+            .build_lead_photo(&edition(&server, Some("/invalid")))
+            .await?;
+        assert_eq!(photo.story_id, "test-story");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fails_when_no_selected_story_has_usable_image()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/article"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw("<html></html>", "text/html"))
+            .mount(&server)
+            .await;
+        assert!(
+            test_http()
+                .build_lead_photo(&edition(&server, None))
+                .await
+                .is_err()
+        );
+        Ok(())
     }
 }

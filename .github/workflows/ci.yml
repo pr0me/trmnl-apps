@@ -75,7 +75,7 @@ jobs:
             exit 0
           fi
           jq --arg variant "$COPY_VARIANT" --slurpfile variants apps/berlin-times/plugin/test/copy-variants.json '
-            .edition.stories |= (to_entries | map(
+            .stories |= (to_entries | map(
               .value.headline = $variants[0][$variant].headlines[.key] |
               .value.summary = $variants[0][$variant].summaries[.key] |
               .value

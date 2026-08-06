@@ -1,0 +1,73 @@
+{
+  "requestId": "exa-test-request",
+  "searchType": null,
+  "costDollars": { "total": 0.017 },
+  "results": [
+    {
+      "title": "Allies beginnen dringende Sicherheitsgespräche",
+      "url": "https://www.reuters.com/world/europe/atlantic-security-talks-2026-08-05/?utm_source=test",
+      "publishedDate": "2026-08-05T02:45:00.000Z",
+      "author": null,
+      "image": "https://static.reuters.com/images/security-talks.jpg",
+      "favicon": null,
+      "summary": "Atlantic allies opened emergency security talks after conditions deteriorated across the region. Officials focused on civilian protection and diplomatic channels. Further decisions will depend on verified developments during the day."
+    },
+    {
+      "title": "Markets reassess rate outlook",
+      "url": "https://www.ft.com/content/00000000-0000-0000-0000-000000000001",
+      "publishedDate": "2026-08-05T01:30:00Z",
+      "image": null,
+      "summary": "Global markets shifted as investors weighed fresh inflation data against cautious central bank guidance. Bond yields moved higher while analysts reduced expectations for rapid interest-rate cuts this year."
+    },
+    {
+      "title": "Berlin beschleunigt wichtige Bahnreparaturen",
+      "url": "https://www.rbb24.de/panorama/beitrag/2026/08/berlin-transit-repairs-example.html",
+      "publishedDate": "2026-08-04T22:20:00+00:00",
+      "summary": "Berlin transport officials advanced repairs on a heavily used rail corridor after engineers found additional structural wear. Revised service plans add replacement buses and extend evening work to shorten the disruption."
+    },
+    {
+      "title": "Europa verschärft Regeln für Cloud-Sicherheit",
+      "url": "https://www.handelsblatt.com/technik/it-internet/cloud-security-rules/100000001.html",
+      "publishedDate": "2026-08-04T23:10:00Z",
+      "author": "",
+      "favicon": null,
+      "summary": "European regulators issued detailed security requirements for cloud software and digital services used by critical sectors. Providers must strengthen cyber incident reporting, chip supply-chain controls, access safeguards, and resilience testing under a phased compliance timetable designed to reduce systemic infrastructure risks across borders while preserving reliable services for public institutions and businesses. The first compliance reviews begin next year."
+    },
+    {
+      "title": "Cities expand heat response plans",
+      "url": "https://www.nytimes.com/2026/08/05/world/europe/heat-response.html",
+      "publishedDate": "2026-08-04T23:00:00Z",
+      "summary": "Cities across southern Europe expanded cooling centres and climate health alerts as temperatures rose. Authorities prioritised older residents, outdoor workers, and neighbourhoods with limited shade during the prolonged heat spell."
+    },
+    {
+      "title": "Impfstoffstudie meldet ermutigende Ergebnisse",
+      "url": "https://www.tagesschau.de/wissen/gesundheit/vaccine-trial-100.html",
+      "publishedDate": "2026-08-04T22:15:00Z",
+      "summary": "Researchers reported encouraging science results from a large late-stage vaccine study, with fewer severe cases among participants receiving the treatment. Independent reviewers said longer follow-up remains necessary before regulators consider approval."
+    },
+    {
+      "title": "International ministers continue diplomatic talks",
+      "url": "https://www.wsj.com/world/europe/ministers-continue-diplomatic-talks-12345678",
+      "publishedDate": "2026-08-05T05:30:00Z",
+      "summary": "International ministers continued diplomacy aimed at resolving a dispute over sanctions and trade. Negotiators said the government talks remained difficult but would resume later Wednesday."
+    },
+    {
+      "title": "Old article outside Berlin day",
+      "url": "https://www.reuters.com/world/europe/old-article-2026-08-04",
+      "publishedDate": "2026-08-04T21:59:59Z",
+      "summary": "This valid-looking report falls just outside the requested Berlin calendar day and must never be selected."
+    },
+    {
+      "title": "Unsafe source domain",
+      "url": "https://reuters.com.attacker.example/world/unsafe-story",
+      "publishedDate": "2026-08-05T06:00:00Z",
+      "summary": "This result uses a deceptive host and must be rejected even though its date and summary look valid."
+    },
+    {
+      "title": "Allies begin urgent regional security talks",
+      "url": "https://www.reuters.com/world/europe/duplicate-security-talks-2026-08-05",
+      "publishedDate": "2026-08-05T03:00:00Z",
+      "summary": "Atlantic allies opened emergency security talks after conditions deteriorated across the region. Officials focused on civilian protection and diplomatic channels."
+    }
+  ]
+}
