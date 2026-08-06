@@ -135,6 +135,13 @@ jobs:
           test "$height" = "1404"
           test "$colors" -le 16
 
+      - name: Make device render readable
+        run: >-
+          docker run --rm
+          --entrypoint chmod
+          -v "$PWD/apps/berlin-times/plugin/_build:/images"
+          trmnl/trmnlp:latest 0644 /images/full.png
+
       - uses: actions/upload-artifact@v7
         with:
           name: berlin-times-render-${{ matrix.copy }}
