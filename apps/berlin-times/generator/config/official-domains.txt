@@ -7,4 +7,9 @@ destatis.de
 ec.europa.eu
 europa.eu
 europarl.europa.eu
-
+federalreserve.gov
+gov.uk
+nato.int
+un.org
+whitehouse.gov
+who.int
