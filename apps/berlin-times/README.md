@@ -1,12 +1,12 @@
 # The Berlin Times
 
-The Berlin Times is a private, landscape-only TRMNL X newspaper front page. It publishes exactly six concise news briefs with source-language headlines and English summaries at 06:30 and 17:00 Europe/Berlin time.
+The Berlin Times is a private, landscape-only TRMNL X newspaper front page. It publishes exactly six concise news briefs with English headlines and summaries at 06:30 and 17:00 Europe/Berlin time.
 
 ```text
 GitHub Actions → Exa Search API → GitHub Pages → TRMNL polling → TRMNL X
 ```
 
-The page is deterministic HTML and Liquid, not an AI-generated image. Exa returns ten current news results and English summaries in one search. The Rust generator independently enforces freshness and URL safety, removes duplicates, selects six stories, fits copy to the layout, processes one source photograph, and publishes a static Pages artifact. TRMNL polls `edition.json` and renders the e-ink screen.
+The page is deterministic HTML and Liquid, not an AI-generated image. Exa returns ten current, non-duplicate news results with English headlines and summaries in one search. The Rust generator independently enforces freshness and URL safety, removes duplicate canonical URLs, selects six stories, fits copy to the layout, processes one source photograph, and publishes a static Pages artifact. TRMNL polls `edition.json` and renders the e-ink screen.
 
 ## Contents
 
@@ -49,19 +49,19 @@ EXA_API_KEY=... cargo run --release --bin berlin-times -- generate \
 
 `EXA_API_BASE` exists for isolated API tests and defaults to `https://api.exa.ai/`. The CLI never logs request headers, environment contents, the raw key, or raw article text.
 
-One live `POST /search` requests ten news results from The New York Times, Financial Times, Tagesschau, Reuters, rbb24, The Wall Street Journal, and Handelsblatt. Its publication filters span the current Europe/Berlin calendar day with DST-correct UTC boundaries. Exa summaries and filters are advisory: the generator checks every result locally. Connection failures, timeouts, `429`, and `5xx` responses are retried up to three total attempts with bounded backoff and `Retry-After` support. Other API errors fail immediately and report Exa's request ID and error tag when available.
+One live, deep-reasoning `POST /search` requests ten news results from The New York Times, Financial Times, Tagesschau, Reuters, rbb24, The Wall Street Journal, and Handelsblatt. It asks Exa for at least two international sources and one German or Berlin source, with no duplicate events between agencies, and forces a live crawl. Its publication filters span the current Europe/Berlin calendar day with DST-correct UTC boundaries. Exa summaries and filters are advisory: the generator checks every result locally. Connection failures, timeouts, `429`, and `5xx` responses are retried up to three total attempts with bounded backoff and `Retry-After` support. Other API errors fail immediately and report Exa's request ID and error tag when available.
 
-The generator logs the request ID, returned/usable/selected counts, provider and category coverage, and Exa's reported cost. Current documented pricing implies approximately $0.017 for a ten-result search with ten summaries, but Exa's reported request cost is authoritative.
+The generator logs the request ID, returned/usable/selected counts, provider and category coverage, and Exa's reported request cost.
 
 ## Editorial contract
 
 The generator rejects an edition unless it has:
 
-- exactly six distinct events;
+- exactly six stories;
 - publication timestamps within the current Berlin calendar day and no more than 30 minutes in the future;
 - canonical, credential-free HTTPS article URLs from the seven configured publications;
-- no duplicate canonical URLs or likely same-event duplicates;
-- original article headlines in the source language;
+- no duplicate canonical URLs;
+- English headlines, including translations requested from Exa for German titles;
 - summaries of at most 60 lead words and 45 secondary words;
 - exactly one mapped publication source per story;
 - all six stories ranked exactly once for photographic suitability.
