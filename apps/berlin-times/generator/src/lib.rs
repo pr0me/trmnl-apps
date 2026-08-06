@@ -32,7 +32,17 @@ pub struct GenerateOptions {
     pub api_base: Url,
 }
 
-/// Generates and atomically publishes complete Berlin Times static edition.
+struct PreviousEdition {
+    edition: EditionV1,
+    photo: Option<PreviousPhoto>,
+}
+
+struct PreviousPhoto {
+    name: String,
+    bytes: Vec<u8>,
+}
+
+/// Generates and atomically publishes a complete static edition of The Berlin Times.
 ///
 /// # Errors
 ///
@@ -43,10 +53,10 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
     } else {
         fetch_previous_edition(&options.public_base_url).await
     };
-    let research = if let Some(path) = &options.fixture {
+    let mut research = if let Some(path) = &options.fixture {
         read_fixture(path).await?
     } else {
-        research_live(options, previous.as_ref()).await?
+        research_live(options, previous.as_ref().map(|previous| &previous.edition)).await?
     };
     validate_result(&research, options.at)?;
 
@@ -70,9 +80,22 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
         SafeHttp::new().build_lead_photo(&research).await?
     };
 
+    promote_photo_story(&mut research, &photo.story_id)?;
+    validate_result(&research, options.at)?;
+
     let (edition, photo_name) =
         site::assemble_edition(&research, &photo, &options.public_base_url, options.at)?;
-    site::publish_site(&options.output, &edition, &photo_name, &photo.bytes)?;
+    let previous_photo = previous
+        .as_ref()
+        .and_then(|previous| previous.photo.as_ref())
+        .map(|photo| (photo.name.as_str(), photo.bytes.as_slice()));
+    site::publish_site(
+        &options.output,
+        &edition,
+        &photo_name,
+        &photo.bytes,
+        previous_photo,
+    )?;
     info!(edition_id = %edition.edition_id, output = %options.output.display(), "edition generated");
     Ok(edition)
 }
@@ -108,7 +131,7 @@ async fn read_fixture(path: impl AsRef<Path>) -> Result<ResearchEdition> {
     serde_json::from_slice(&bytes).map_err(GeneratorError::from)
 }
 
-async fn fetch_previous_edition(public_base_url: &Url) -> Option<EditionV1> {
+async fn fetch_previous_edition(public_base_url: &Url) -> Option<PreviousEdition> {
     let mut base = public_base_url.clone();
     if !base.path().ends_with('/') {
         let path = format!("{}/", base.path());
@@ -120,7 +143,11 @@ async fn fetch_previous_edition(public_base_url: &Url) -> Option<EditionV1> {
         .build()
         .ok()?;
     match client.get(url).send().await {
-        Ok(response) if response.status().is_success() => response.json().await.ok(),
+        Ok(response) if response.status().is_success() => {
+            let edition = response.json::<EditionV1>().await.ok()?;
+            let photo = fetch_previous_photo(public_base_url, &edition).await;
+            Some(PreviousEdition { edition, photo })
+        }
         Ok(response) => {
             warn!(status = %response.status(), "previous edition was unavailable");
             None
@@ -132,6 +159,59 @@ async fn fetch_previous_edition(public_base_url: &Url) -> Option<EditionV1> {
     }
 }
 
+async fn fetch_previous_photo(public_base_url: &Url, edition: &EditionV1) -> Option<PreviousPhoto> {
+    let name = previous_photo_name(public_base_url, &edition.lead_image.url)?;
+    match SafeHttp::new()
+        .fetch_published_photo(&edition.lead_image.url)
+        .await
+    {
+        Ok(bytes) => Some(PreviousPhoto { name, bytes }),
+        Err(error) => {
+            warn!(%error, "previous lead photo could not be retained");
+            None
+        }
+    }
+}
+
+fn previous_photo_name(public_base_url: &Url, image_url: &str) -> Option<String> {
+    let image_url = Url::parse(image_url).ok()?;
+    if image_url.origin() != public_base_url.origin() {
+        return None;
+    }
+    let mut prefix = String::from(public_base_url.path());
+    if !prefix.ends_with('/') {
+        prefix.push('/');
+    }
+    prefix.push_str("assets/");
+    let name = image_url.path().strip_prefix(&prefix)?;
+    let is_jpeg = Path::new(name)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("jpg"));
+    (name.starts_with("lead-") && is_jpeg && !name.contains('/')).then(|| name.into())
+}
+
+fn promote_photo_story(edition: &mut ResearchEdition, story_id: &str) -> Result<()> {
+    let story_index = edition
+        .stories
+        .iter()
+        .position(|story| story.id == story_id)
+        .ok_or_else(|| GeneratorError::Config("lead photo story was not selected".into()))?;
+    if story_index > 0 {
+        let story = edition.stories.remove(story_index);
+        edition.stories.insert(0, story);
+    }
+    let candidate_index = edition
+        .photo_candidates
+        .iter()
+        .position(|candidate| candidate == story_id)
+        .ok_or_else(|| GeneratorError::Config("lead photo candidate was not ranked".into()))?;
+    if candidate_index > 0 {
+        let candidate = edition.photo_candidates.remove(candidate_index);
+        edition.photo_candidates.insert(0, candidate);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -140,7 +220,8 @@ mod tests {
     use tempfile::tempdir;
     use url::Url;
 
-    use super::{GenerateOptions, generate};
+    use super::{GenerateOptions, generate, previous_photo_name, promote_photo_story};
+    use crate::model::ResearchEdition;
 
     #[tokio::test]
     async fn failed_generation_preserves_existing_output()
@@ -168,6 +249,46 @@ mod tests {
 
         assert!(generate(&options).await.is_err());
         assert_eq!(tokio::fs::read(marker).await?, b"keep me");
+        Ok(())
+    }
+
+    #[test]
+    fn recognizes_previous_photo_on_public_site()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let base = Url::parse("https://example.com/trmnl-apps/")?;
+        assert_eq!(
+            previous_photo_name(
+                &base,
+                "https://example.com/trmnl-apps/assets/lead-20260806.jpg"
+            )
+            .as_deref(),
+            Some("lead-20260806.jpg")
+        );
+        assert!(
+            previous_photo_name(&base, "https://attacker.example/assets/lead-20260806.jpg")
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn promotes_verified_photo_story() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut edition = serde_json::from_str::<ResearchEdition>(include_str!(
+            "../fixtures/valid-research.json"
+        ))?;
+        let story_id = edition
+            .stories
+            .get(2)
+            .map(|story| story.id.clone())
+            .ok_or("fixture must contain third story")?;
+
+        promote_photo_story(&mut edition, &story_id)?;
+
+        assert_eq!(
+            edition.stories.first().map(|story| &story.id),
+            Some(&story_id)
+        );
+        assert_eq!(edition.photo_candidates.first(), Some(&story_id));
         Ok(())
     }
 }

@@ -99,6 +99,33 @@ impl SafeHttp {
         Err(GeneratorError::NoPhoto(failures.join("; ")))
     }
 
+    pub async fn fetch_published_photo(&self, image_url: &str) -> Result<Vec<u8>> {
+        let image_url = Url::parse(image_url)
+            .map_err(|error| GeneratorError::UnsafeUrl(format!("invalid image url: {error}")))?;
+        let image = self.fetch(image_url, MAX_IMAGE_BYTES, "image/jpeg").await?;
+        if !image
+            .content_type
+            .as_deref()
+            .is_some_and(|value| value.starts_with("image/jpeg"))
+        {
+            return Err(GeneratorError::NoPhoto(
+                "published photo is not a jpeg".into(),
+            ));
+        }
+        let reader = ImageReader::new(Cursor::new(&image.bytes))
+            .with_guessed_format()
+            .map_err(|error| GeneratorError::Image(error.to_string()))?;
+        let dimensions = reader
+            .into_dimensions()
+            .map_err(|error| GeneratorError::Image(error.to_string()))?;
+        if dimensions != (OUTPUT_WIDTH, OUTPUT_HEIGHT) {
+            return Err(GeneratorError::Image(
+                "published photo has unexpected dimensions".into(),
+            ));
+        }
+        Ok(image.bytes)
+    }
+
     async fn photo_from_image(
         &self,
         story: &ResearchStory,
@@ -563,6 +590,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn validates_published_photo() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        let expected = process_image(&image_bytes(), true)?;
+        Mock::given(method("GET"))
+            .and(path("/published.jpg"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "image/jpeg")
+                    .set_body_bytes(expected.clone()),
+            )
+            .mount(&server)
+            .await;
+
+        let actual = test_http()
+            .fetch_published_photo(&format!("{}/published.jpg", server.uri()))
+            .await?;
+        assert_eq!(actual, expected);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn falls_back_to_open_graph_after_invalid_exa_image()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let server = MockServer::start().await;
@@ -600,6 +648,41 @@ mod tests {
             .build_lead_photo(&edition(&server, Some("/invalid")))
             .await?;
         assert_eq!(photo.story_id, "test-story");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn selects_later_story_with_usable_image()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/article"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw("<html></html>", "text/html"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/direct"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "image/x-portable-pixmap")
+                    .set_body_bytes(image_bytes()),
+            )
+            .mount(&server)
+            .await;
+        let mut edition = edition(&server, None);
+        let mut second = edition
+            .stories
+            .first()
+            .cloned()
+            .ok_or("test edition must contain story")?;
+        second.id = "second-story".into();
+        second.image_url = Some(format!("{}/direct", server.uri()));
+        edition.stories.push(second);
+        edition.photo_candidates.push("second-story".into());
+
+        let photo = test_http().build_lead_photo(&edition).await?;
+
+        assert_eq!(photo.story_id, "second-story");
         Ok(())
     }
 

@@ -206,6 +206,7 @@ struct Candidate {
     rank: usize,
     canonical_url: String,
     provider: &'static str,
+    title: String,
     summary: String,
     published_at: DateTime<Utc>,
     image_url: Option<String>,
@@ -363,13 +364,16 @@ fn normalize(results: Vec<ExaResult>, now: DateTime<Utc>) -> Result<Vec<Candidat
     let mut candidates = Vec::<Candidate>::new();
 
     for (rank, result) in results.into_iter().take(10).enumerate() {
+        let title = collapse_whitespace(&result.title);
         let Some(summary) = result.summary.map(|value| collapse_whitespace(&value)) else {
             continue;
         };
-        if summary.is_empty()
+        if title.is_empty()
+            || title.contains('<')
+            || title.contains('>')
+            || summary.is_empty()
             || summary.contains('<')
             || summary.contains('>')
-            || headline(&summary).is_empty()
         {
             continue;
         }
@@ -394,19 +398,20 @@ fn normalize(results: Vec<ExaResult>, now: DateTime<Utc>) -> Result<Vec<Candidat
         let Some(provider) = provider_name(&canonical_url) else {
             continue;
         };
-        let (title_tokens, sentence_tokens) = event_tokens(&result.title, &summary);
+        let (title_tokens, sentence_tokens) = event_tokens(&title, &summary);
         if candidates.iter().any(|candidate| {
             likely_duplicate(&candidate.title_tokens, &title_tokens)
                 || likely_duplicate(&candidate.sentence_tokens, &sentence_tokens)
         }) {
             continue;
         }
-        let categories = classify(&canonical_url, &result.title, &summary, provider);
+        let categories = classify(&canonical_url, &title, &summary, provider);
         let image_url = result.image.filter(|value| safe_image_url(value));
         candidates.push(Candidate {
             rank,
             canonical_url,
             provider,
+            title,
             summary,
             published_at,
             image_url,
@@ -505,26 +510,22 @@ impl SelectionScore {
 fn build_edition(selected: Vec<&Candidate>) -> ResearchEdition {
     let stories = selected
         .into_iter()
-        .enumerate()
-        .map(|(index, candidate)| {
-            let headline = headline(&candidate.summary);
-            ResearchStory {
-                id: story_id(&headline, &candidate.canonical_url),
-                primary_category: candidate
-                    .categories
-                    .first()
-                    .cloned()
-                    .unwrap_or(Category::World),
-                is_developing: false,
-                headline,
-                summary: fit_summary(&candidate.summary, if index == 0 { 60 } else { 45 }),
-                published_at: candidate.published_at,
-                sources: vec![ResearchSource {
-                    name: candidate.provider.into(),
-                    url: candidate.canonical_url.clone(),
-                }],
-                image_url: candidate.image_url.clone(),
-            }
+        .map(|candidate| ResearchStory {
+            id: story_id(&candidate.title, &candidate.canonical_url),
+            primary_category: candidate
+                .categories
+                .first()
+                .cloned()
+                .unwrap_or(Category::World),
+            is_developing: false,
+            headline: candidate.title.clone(),
+            summary: fit_summary(&candidate.summary, 45),
+            published_at: candidate.published_at,
+            sources: vec![ResearchSource {
+                name: candidate.provider.into(),
+                url: candidate.canonical_url.clone(),
+            }],
+            image_url: candidate.image_url.clone(),
         })
         .collect::<Vec<_>>();
     let photo_candidates = stories
@@ -582,40 +583,6 @@ fn classify(url: &str, title: &str, summary: &str, provider: &str) -> Vec<Catego
         categories.push(Category::World);
     }
     categories
-}
-
-fn headline(summary: &str) -> String {
-    let first = leading_sentences(summary).next().unwrap_or(summary).trim();
-    let mut words = first.split_whitespace().take(12).collect::<Vec<_>>();
-    while words.last().is_some_and(|word| {
-        let normalized = word
-            .trim_matches(|character: char| !character.is_alphanumeric())
-            .to_ascii_lowercase();
-        matches!(
-            normalized.as_str(),
-            "a" | "an"
-                | "and"
-                | "as"
-                | "at"
-                | "but"
-                | "by"
-                | "for"
-                | "from"
-                | "in"
-                | "of"
-                | "on"
-                | "or"
-                | "the"
-                | "to"
-                | "with"
-        )
-    }) {
-        let _removed = words.pop();
-    }
-    words
-        .join(" ")
-        .trim_end_matches(|character: char| !character.is_alphanumeric())
-        .into()
 }
 
 fn fit_summary(summary: &str, limit: usize) -> String {
@@ -798,8 +765,7 @@ mod tests {
 
     use super::{
         DOMAINS, ExaClient, ExaResponse, SEARCH_QUERY, SUMMARY_PROMPT, SYSTEM_PROMPT, classify,
-        fit_summary, headline, normalize, normalize_and_select, parse_error_response,
-        search_request,
+        fit_summary, normalize, normalize_and_select, parse_error_response, search_request,
     };
     use crate::model::Category;
     use crate::schedule::berlin_day;
@@ -887,17 +853,20 @@ mod tests {
     }
 
     #[test]
-    fn derives_headline_and_fits_complete_sentences() {
+    fn keeps_source_headline_and_fits_complete_sentences()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let summary = "Officials approved the extensive new plan for rail construction in Berlin and Brandenburg on Wednesday. Work starts Friday. Extra words follow here.";
-        assert_eq!(
-            headline(summary),
-            "Officials approved the extensive new plan for rail construction in Berlin"
-        );
         assert_eq!(
             fit_summary(summary, 18),
             "Officials approved the extensive new plan for rail construction in Berlin and Brandenburg on Wednesday. Work starts Friday."
         );
         assert!(fit_summary(summary, 8).ends_with('…'));
+        let edition = normalize_and_select(fixture()?, now()?, None)?;
+        assert_eq!(
+            edition.stories.first().map(|story| story.headline.as_str()),
+            Some("Allies beginnen dringende Sicherheitsgespräche")
+        );
+        Ok(())
     }
 
     #[test]
@@ -924,7 +893,7 @@ mod tests {
             edition
                 .stories
                 .iter()
-                .all(|story| story.headline.split_whitespace().count() <= 12)
+                .all(|story| !story.headline.is_empty())
         );
         assert_eq!(edition.photo_candidates.len(), 6);
         assert_eq!(

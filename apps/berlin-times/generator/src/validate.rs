@@ -232,12 +232,6 @@ fn validate_copy(
     prefix: &str,
     report: &mut ValidationReport,
 ) {
-    let headline_words = word_count(&story.headline);
-    if headline_words > 12 {
-        report.problems.push(format!(
-            "{prefix} headline has {headline_words} words; maximum is 12"
-        ));
-    }
     let summary_words = word_count(&story.summary);
     let maximum = if index == 0 { 60 } else { 45 };
     if summary_words > maximum {

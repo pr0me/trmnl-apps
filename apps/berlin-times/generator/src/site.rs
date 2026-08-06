@@ -53,6 +53,7 @@ pub fn publish_site(
     edition: &EditionV1,
     photo_name: &str,
     photo_bytes: &[u8],
+    previous_photo: Option<(&str, &[u8])>,
 ) -> Result<()> {
     let output = output.as_ref();
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
@@ -70,6 +71,11 @@ pub fn publish_site(
     edition_json.push('\n');
     write(staging.join("edition.json"), edition_json.as_bytes())?;
     write(assets.join(photo_name), photo_bytes)?;
+    if let Some((previous_name, previous_bytes)) = previous_photo
+        && previous_name != photo_name
+    {
+        write(assets.join(previous_name), previous_bytes)?;
+    }
     write(fonts.join("UnifrakturCook-Bold.ttf"), UNIFRAKTUR_COOK)?;
     write(fonts.join("SourceSerif4-Variable.ttf"), SOURCE_SERIF)?;
     write(fonts.join("OFL.txt"), FONT_LICENSE)?;
@@ -136,7 +142,7 @@ fn status_page(edition: &EditionV1) -> String {
         },
     );
     format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex,nofollow\"><title>Berlin Times · {}</title><style>{}</style></head><body><main><header><p>{} edition</p><h1>Berlin Times</h1><p>{}</p></header><section class=\"meta\"><span>Generated {}</span><span>Next edition {}</span><span>Schema v1 · {}</span></section><section>{stories}</section></main></body></html>",
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta name=\"robots\" content=\"noindex,nofollow\"><title>The Berlin Times · {}</title><style>{}</style></head><body><main><header><p>{} edition</p><h1>The Berlin Times</h1><p>{}</p></header><section class=\"meta\"><span>Generated {}</span><span>Next edition {}</span><span>Schema v1 · {}</span></section><section>{stories}</section></main></body></html>",
         encode_text(&edition.display_date),
         STATUS_CSS,
         edition.edition_name.as_str(),
