@@ -55,5 +55,3 @@ jobs:
       - name: Deploy Pages artifact
         id: deployment
         uses: actions/deploy-pages@v5
-        with:
-          timeout: 900000
