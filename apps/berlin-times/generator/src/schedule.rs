@@ -30,7 +30,7 @@ pub fn berlin_day(now: DateTime<Utc>) -> Result<BerlinDay> {
 
 pub fn edition_name(now: DateTime<Utc>) -> EditionName {
     let local = now.with_timezone(&Berlin);
-    if local.hour() < 12 {
+    if (local.hour(), local.minute()) < (EVENING_HOUR, EVENING_MINUTE) {
         EditionName::Morning
     } else {
         EditionName::Evening
@@ -103,8 +103,10 @@ mod tests {
     #[test]
     fn names_local_editions() {
         let morning = Utc.with_ymd_and_hms(2026, 8, 5, 4, 15, 0).single();
-        let evening = Utc.with_ymd_and_hms(2026, 8, 5, 16, 15, 0).single();
+        let before_evening = Utc.with_ymd_and_hms(2026, 8, 5, 14, 59, 0).single();
+        let evening = Utc.with_ymd_and_hms(2026, 8, 5, 15, 0, 0).single();
         assert_eq!(morning.map(edition_name), Some(EditionName::Morning));
+        assert_eq!(before_evening.map(edition_name), Some(EditionName::Morning));
         assert_eq!(evening.map(edition_name), Some(EditionName::Evening));
     }
 }
