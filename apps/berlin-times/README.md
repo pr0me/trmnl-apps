@@ -1,6 +1,6 @@
 # Berlin Times
 
-Berlin Times is a private, landscape-only TRMNL X newspaper front page. It publishes exactly six concise English-language news briefs at 06:15 and 18:15 Europe/Berlin time.
+Berlin Times is a private, landscape-only TRMNL X newspaper front page. It publishes exactly six concise English-language news briefs at 06:30 and 17:00 Europe/Berlin time.
 
 ```text
 GitHub Actions → OpenAI Responses API → GitHub Pages → TRMNL polling → TRMNL X
@@ -24,7 +24,7 @@ cargo run --bin berlin-times -- generate \
   --public-base-url https://pr0me.github.io/trmnl-apps/ \
   --fixture apps/berlin-times/generator/fixtures/valid-research.json \
   --fixture-image apps/berlin-times/generator/fixtures/lead.ppm \
-  --at 2026-08-05T04:15:00Z
+  --at 2026-08-05T04:30:00Z
 ```
 
 The output contains:
