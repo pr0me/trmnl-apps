@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 require 'selenium-webdriver'
-require '/app/lib/trmnlp/image_quantizer'
 
 WIDTH = 1872
 HEIGHT = 1404
@@ -72,6 +71,9 @@ begin
       });
     const photo = images[0]?.getBoundingClientRect();
     const pageBox = page?.getBoundingClientRect();
+    const contentBox = document.querySelector('.bt-page')?.getBoundingClientRect().toJSON();
+    const mastheadBox = document.querySelector('.bt-masthead')?.getBoundingClientRect().toJSON();
+    const datelineBox = document.querySelector('.bt-dateline')?.getBoundingClientRect().toJSON();
     const outside = Array.from(page?.querySelectorAll('*') || [])
       .filter((element) => {
         const box = element.getBoundingClientRect();
@@ -100,6 +102,12 @@ begin
       photoArea: photo ? photo.width * photo.height / (#{WIDTH} * #{HEIGHT}) : 1,
       pageWidth: pageBox?.width,
       pageHeight: pageBox?.height,
+      pageScrollTop: page?.scrollTop,
+      contentTop: contentBox?.top,
+      mastheadTop: mastheadBox?.top,
+      mastheadHeight: mastheadBox?.height,
+      datelineTop: datelineBox?.top,
+      datelineHeight: datelineBox?.height,
       screenWidth: screen?.getBoundingClientRect().width,
       screenHeight: screen?.getBoundingClientRect().height,
       clamped: Array.from(document.querySelectorAll('.bt-headline, .bt-summary'))
@@ -141,6 +149,12 @@ begin
   failures << "screen height is #{result['screenHeight']}" unless result['screenHeight'].round == HEIGHT
   failures << "page width is #{result['pageWidth']}" if result['pageWidth'].to_f <= 0
   failures << "page height is #{result['pageHeight']}" if result['pageHeight'].to_f <= 0
+  failures << "page scroll is #{result['pageScrollTop']}" unless result['pageScrollTop'].to_f.round.zero?
+  failures << "masthead top is #{result['mastheadTop']}" unless result['mastheadTop'].to_f.round == 10
+  failures << "masthead height is #{result['mastheadHeight']}" unless result['mastheadHeight'].to_f.round == 126
+  failures << "dateline top is #{result['datelineTop']}" unless result['datelineTop'].to_f.round == 136
+  failures << "dateline height is #{result['datelineHeight']}" unless result['datelineHeight'].to_f.round == 43
+  failures << "content top is #{result['contentTop']}" unless result['contentTop'].to_f.round == 179
   unless result['clamped'].empty?
     details = result['clamped'].map do |clamp|
       "#{clamp['story']} #{clamp['kind']} #{clamp['lineCount']}/#{clamp['lineLimit']} lines"
@@ -156,12 +170,6 @@ begin
   output = File.expand_path('../_build/full.png', __dir__)
   driver.execute_script('window.scrollTo(0, 0)')
   driver.save_screenshot(output)
-  image = MiniMagick::Image.open(output)
-  image.background('white')
-  image.alpha('remove')
-  image.alpha('off')
-  image.write(output)
-  TRMNLP::ImageQuantizer.new(depth: 4).call(output)
   File.chmod(0o644, output)
   puts format('layout valid: six stories, one image, %.2f%% photo area', result['photoArea'].to_f * 100)
 ensure
