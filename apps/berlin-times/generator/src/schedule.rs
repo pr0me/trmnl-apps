@@ -7,8 +7,9 @@ use crate::{
 };
 
 const MORNING_HOUR: u32 = 6;
-const EVENING_HOUR: u32 = 18;
-const EDITION_MINUTE: u32 = 15;
+const MORNING_MINUTE: u32 = 30;
+const EVENING_HOUR: u32 = 17;
+const EVENING_MINUTE: u32 = 0;
 
 pub fn edition_name(now: DateTime<Utc>) -> EditionName {
     let local = now.with_timezone(&Berlin);
@@ -28,8 +29,8 @@ pub fn display_date(now: DateTime<Utc>) -> String {
 pub fn next_scheduled_at(now: DateTime<Utc>) -> Result<DateTime<FixedOffset>> {
     let local = now.with_timezone(&Berlin);
     let date = local.date_naive();
-    let morning = local_time(date, MORNING_HOUR)?;
-    let evening = local_time(date, EVENING_HOUR)?;
+    let morning = local_time(date, MORNING_HOUR, MORNING_MINUTE)?;
+    let evening = local_time(date, EVENING_HOUR, EVENING_MINUTE)?;
 
     let next = if local < morning {
         morning
@@ -39,21 +40,14 @@ pub fn next_scheduled_at(now: DateTime<Utc>) -> Result<DateTime<FixedOffset>> {
         let tomorrow = date
             .succ_opt()
             .ok_or_else(|| GeneratorError::Config("cannot calculate next schedule date".into()))?;
-        local_time(tomorrow, MORNING_HOUR)?
+        local_time(tomorrow, MORNING_HOUR, MORNING_MINUTE)?
     };
 
     Ok(next.fixed_offset())
 }
 
-fn local_time(date: NaiveDate, hour: u32) -> Result<DateTime<chrono_tz::Tz>> {
-    match Berlin.with_ymd_and_hms(
-        date.year(),
-        date.month(),
-        date.day(),
-        hour,
-        EDITION_MINUTE,
-        0,
-    ) {
+fn local_time(date: NaiveDate, hour: u32, minute: u32) -> Result<DateTime<chrono_tz::Tz>> {
+    match Berlin.with_ymd_and_hms(date.year(), date.month(), date.day(), hour, minute, 0) {
         LocalResult::Single(value) => Ok(value),
         LocalResult::Ambiguous(first, _) => Ok(first),
         LocalResult::None => Err(GeneratorError::Config(
@@ -75,7 +69,7 @@ mod tests {
         let next = now.and_then(|value| next_scheduled_at(value).ok());
         assert_eq!(
             next.map(|value| value.to_rfc3339()),
-            Some("2026-08-05T18:15:00+02:00".into())
+            Some("2026-08-05T17:00:00+02:00".into())
         );
     }
 
@@ -85,7 +79,7 @@ mod tests {
         let next = now.and_then(|value| next_scheduled_at(value).ok());
         assert_eq!(
             next.map(|value| value.to_rfc3339()),
-            Some("2026-12-06T06:15:00+01:00".into())
+            Some("2026-12-06T06:30:00+01:00".into())
         );
     }
 
