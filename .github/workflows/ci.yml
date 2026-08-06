@@ -140,4 +140,5 @@ jobs:
           name: berlin-times-render-${{ matrix.copy }}
           path: |
             apps/berlin-times/plugin/_build/full.png
+            apps/berlin-times/plugin/_build/layout.png
             apps/berlin-times/plugin/test/golden/${{ matrix.copy }}.png

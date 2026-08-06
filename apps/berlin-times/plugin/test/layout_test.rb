@@ -167,7 +167,7 @@ begin
   end
 
   abort(failures.join("\n")) unless failures.empty?
-  output = File.expand_path('../_build/full.png', __dir__)
+  output = File.expand_path('../_build/layout.png', __dir__)
   driver.execute_script('window.scrollTo(0, 0)')
   driver.save_screenshot(output)
   File.chmod(0o644, output)
