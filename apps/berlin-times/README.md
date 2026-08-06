@@ -70,15 +70,37 @@ Germany, technology, global economics, and global politics coverage; provider di
 
 ## Plugin preview
 
-The project’s `.trmnlp.yml` points local previews at `_site` on port 8000 so the fixture JSON, CSS, fonts, and image stay outside the uploaded plugin definition.
+[`trmnlp`](https://github.com/usetrmnl/trmnlp) can serve the plugin entirely through Docker. From the repository root, run:
+
+```sh
+docker run --rm \
+  --pull always \
+  --publish 4567:4567 \
+  --volume "$PWD/apps/berlin-times/plugin:/plugin" \
+  --mount type=bind,source=/dev/null,target=/plugin/.trmnlp.yml,readonly \
+  trmnl/trmnlp:latest serve --bind 0.0.0.0
+```
+
+Open `http://localhost:4567`, select the full layout, TRMNL X, landscape orientation, and a 4-bit palette. `trmnlp` fetches `https://pr0me.github.io/trmnl-apps/edition.json`; its startup log should report that URL with a `200` status. Use the preview's **Poll** button to fetch the latest published edition again. The read-only `/dev/null` mount hides the local `.trmnlp.yml`, so the server uses the production polling URL in `src/settings.yml` and the template's production CSS, fonts, and lead image URLs. Stop the server with `Ctrl-C`.
+
+### Fixture and layout preview
+
+The checked-in `.trmnlp.yml` instead points local previews at `_site` on port 8000 so deterministic fixture JSON, CSS, fonts, and images stay outside the uploaded plugin definition. Generate the fixture first, then run the following commands from the repository root. Keep the fixture server running in its own terminal:
 
 ```sh
 python3 apps/berlin-times/plugin/test/fixture_server.py _site \
   --plugin-build apps/berlin-times/plugin/_build
+```
+
+In a second terminal:
+
+```sh
 docker run --rm \
+  --pull always \
   -v "$PWD/apps/berlin-times/plugin:/plugin" \
   trmnl/trmnlp:latest lint
 docker run --rm \
+  --pull always \
   -v "$PWD/apps/berlin-times/plugin:/plugin" \
   trmnl/trmnlp:latest build --png --width 1872 --height 1404 --color-depth 4
 ```
@@ -110,10 +132,32 @@ The secret-free monthly keepalive workflow updates `.github/schedule-heartbeat` 
 
 1. Confirm Developer perks are enabled for the X.
 2. Wait for the first successful Pages deployment, then verify `https://pr0me.github.io/trmnl-apps/edition.json`.
-3. From `apps/berlin-times/plugin`, run `trmnlp login`, then `trmnlp push`. No TRMNL credential belongs in GitHub.
-4. Confirm the polling URL is `https://pr0me.github.io/trmnl-apps/edition.json` with a 60-minute refresh interval.
-5. Add Berlin Times to the playlist as a full-screen item.
-6. Set the X to landscape and 16 grayscale levels, then force a refresh.
+3. From the repository root, create the host-side configuration directory and log in interactively through Docker:
+
+   ```sh
+   mkdir -p "$HOME/.config/trmnlp"
+   docker run --rm -it \
+     --pull always \
+     --volume "$HOME/.config/trmnlp:/root/.config/trmnlp" \
+     --volume "$PWD/apps/berlin-times/plugin:/plugin" \
+     trmnl/trmnlp:latest login
+   ```
+
+   Visit the account URL printed by `trmnlp`, copy the API key, and paste it at the prompt. Login works through Docker because `-it` exposes the interactive prompt and the configuration mount persists the validated key at `~/.config/trmnlp/config.yml` after the container exits. No TRMNL credential belongs in the repository or GitHub.
+4. Push the plugin with the same configuration mount:
+
+   ```sh
+   docker run --rm -it \
+     --pull always \
+     --volume "$HOME/.config/trmnlp:/root/.config/trmnlp" \
+     --volume "$PWD/apps/berlin-times/plugin:/plugin" \
+     trmnl/trmnlp:latest push
+   ```
+
+   The first push creates a private plugin and writes its server-assigned `id` back to `plugin/src/settings.yml`; keep that `id` so later pushes update the same plugin. Subsequent pushes ask before overwriting the server copy.
+5. Confirm the polling URL is `https://pr0me.github.io/trmnl-apps/edition.json` with a 60-minute refresh interval.
+6. Add Berlin Times to the playlist as a full-screen item.
+7. Set the X to landscape and 16 grayscale levels, then force a refresh.
 
 Half and quadrant mashup templates intentionally show a full-screen-only notice. Portrait rendering is not supported in v1.
 
