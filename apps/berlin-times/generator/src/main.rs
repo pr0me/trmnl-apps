@@ -11,7 +11,7 @@ use url::Url;
 #[command(
     name = "berlin-times",
     version,
-    about = "Generate the Berlin Times edition"
+    about = "Generate The Berlin Times edition"
 )]
 struct Cli {
     #[command(subcommand)]

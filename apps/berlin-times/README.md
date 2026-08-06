@@ -1,6 +1,6 @@
-# Berlin Times
+# The Berlin Times
 
-Berlin Times is a private, landscape-only TRMNL X newspaper front page. It publishes exactly six concise English-language news briefs at 06:30 and 17:00 Europe/Berlin time.
+The Berlin Times is a private, landscape-only TRMNL X newspaper front page. It publishes exactly six concise news briefs with source-language headlines and English summaries at 06:30 and 17:00 Europe/Berlin time.
 
 ```text
 GitHub Actions → Exa Search API → GitHub Pages → TRMNL polling → TRMNL X
@@ -61,12 +61,12 @@ The generator rejects an edition unless it has:
 - publication timestamps within the current Berlin calendar day and no more than 30 minutes in the future;
 - canonical, credential-free HTTPS article URLs from the seven configured publications;
 - no duplicate canonical URLs or likely same-event duplicates;
-- locally derived English headlines of at most 12 words;
+- original article headlines in the source language;
 - summaries of at most 60 lead words and 45 secondary words;
 - exactly one mapped publication source per story;
 - all six stories ranked exactly once for photographic suitability.
 
-Germany, technology, global economics, and global politics coverage; provider diversity; an Exa image; and URLs absent from the prior edition are deterministic best-effort selection preferences, not publication blockers. Research pages are untrusted input. The photo fetcher tries valid Exa image URLs first and falls back to each article's Open Graph image. It permits HTTPS on port 443 only, rejects credentials and private/reserved addresses, checks every redirect, caps redirect count, download time and bytes, validates image dimensions before decoding, crops to the template's fixed 560:367 aspect ratio, converts to grayscale, and writes a compressed JPEG. If no selected story yields a usable image, no edition is published.
+Germany, technology, global economics, and global politics coverage; provider diversity; an Exa image; and URLs absent from the prior edition are deterministic best-effort selection preferences, not publication blockers. Research pages are untrusted input. The photo fetcher tries valid Exa image URLs first and falls back to each article's Open Graph image. It permits HTTPS on port 443 only, rejects credentials and private/reserved addresses, checks every redirect, caps redirect count, download time and bytes, validates image dimensions before decoding, crops to the template's fixed 560:367 aspect ratio, converts to grayscale, and writes a compressed JPEG. The first story whose image completes that pipeline is promoted to the lead position. If no selected story yields a usable image, no edition is published. When the preceding edition and its lead JPEG remain available, the next Pages artifact carries that validated image forward so a client holding cached JSON does not receive a `404` during deployment.
 
 ## Plugin preview
 
@@ -114,7 +114,7 @@ docker run --rm --entrypoint /usr/local/bin/ruby \
   trmnl/trmnlp:latest test/layout_test.rb
 ```
 
-It checks six unique articles, headlines, and summaries; one successfully loaded image; X viewport and story bounds; unclamped fixture copy; and a photo area no greater than 18% of the screen. The assertion writes the final 1872×1404 screenshot and quantizes it to 4-bit grayscale after the browser reaches a stable layout. CI repeats this with short, typical, and maximum-budget copy and uploads each result beside its checked-in golden PNG for visual diff review. Golden files are updated intentionally after review, never by CI.
+It checks six unique articles, headlines, and summaries; one successfully loaded image; X viewport, masthead, dateline, and story bounds; unclamped fixture copy; and a photo area no greater than 18% of the screen. The assertion writes the browser's final 1872×1404 PNG after the layout reaches a stable state; the preceding `trmnlp build` separately verifies 4-bit device rendering. CI repeats this with short, typical, and maximum-budget copy and uploads each result beside its checked-in golden PNG for visual diff review. Golden files are updated intentionally after review, never by CI.
 
 ## GitHub setup
 
@@ -122,7 +122,7 @@ It checks six unique articles, headlines, and summaries; one successfully loaded
 2. In **Settings → Pages**, choose **GitHub Actions** as the source.
 3. In **Settings → Secrets and variables → Actions → Repository secrets**, create `EXA_API_KEY`. Do not create it as a repository variable.
 4. Use a project-scoped key, set project budget alerts, and rotate it after any suspected exposure.
-5. Run **Publish Berlin Times edition** manually and review all six claims, source links, and the photo before relying on the schedule.
+5. Run **Publish The Berlin Times edition** manually and review all six claims, source links, and the photo before relying on the schedule.
 
 Only the generator step receives `EXA_API_KEY`. Pull-request CI has no secret access, fork pull requests never invoke edition publication, and the repository does not use `pull_request_target`. Pages deployment permissions are isolated to the deployment job. Publication may take several minutes after a successful run.
 
@@ -156,7 +156,7 @@ The secret-free monthly keepalive workflow updates `.github/schedule-heartbeat` 
 
    The first push creates a private plugin and writes its server-assigned `id` back to `plugin/src/settings.yml`; keep that `id` so later pushes update the same plugin. Subsequent pushes ask before overwriting the server copy.
 5. Confirm the polling URL is `https://pr0me.github.io/trmnl-apps/edition.json` with a 60-minute refresh interval.
-6. Add Berlin Times to the playlist as a full-screen item.
+6. Add The Berlin Times to the playlist as a full-screen item.
 7. Set the X to landscape and 16 grayscale levels, then force a refresh.
 
 Half and quadrant mashup templates intentionally show a full-screen-only notice. Portrait rendering is not supported in v1.

@@ -1,4 +1,4 @@
-name: Publish Berlin Times edition
+name: Publish The Berlin Times edition
 
 on:
   schedule:

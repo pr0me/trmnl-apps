@@ -2,7 +2,7 @@
 
 Private TRMNL plugins and their supporting generators.
 
-The first app is [Berlin Times](apps/berlin-times/README.md), a twice-daily English news front page designed exclusively for TRMNL X in landscape mode.
+The first app is [The Berlin Times](apps/berlin-times/README.md), a twice-daily news front page with source-language headlines and English summaries, designed exclusively for TRMNL X in landscape mode.
 
 ## Repository checks
 
@@ -17,4 +17,3 @@ The pull-request workflow is secret-free. It also generates a fixed edition, lin
 ## License
 
 Project code is MIT licensed. Bundled UnifrakturCook and Source Serif 4 font files are licensed under the SIL Open Font License; their license is distributed with the generator assets and every Pages artifact.
-

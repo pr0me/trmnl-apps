@@ -6,10 +6,10 @@
 {% assign rail_three = stories[5] %}
 {% assign photo_story = stories | where: "id", lead_image.story_id | first %}
 
-<div class="layout layout--col bt">
+<div class="bt">
   <header class="bt-masthead">
     <div class="bt-masthead__side">No. {{ edition_id | slice: 0, 8 | escape }}</div>
-    <h1 class="bt-masthead__name">Berlin Times</h1>
+    <h1 class="bt-masthead__name">The Berlin Times</h1>
     <div class="bt-masthead__side bt-masthead__side--right">{{ edition_name | escape }} edition</div>
   </header>
 
@@ -81,9 +81,20 @@
   window.BERLIN_TIMES_LAYOUT_READY = false;
   void (async () => {
     await document.fonts.ready;
-    if (window.terminalize) {
-      await window.terminalize();
+    if (document.readyState !== "complete") {
+      await new Promise((resolve) => window.addEventListener("load", resolve, { once: true }));
     }
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const scheduler = window.__terminalizeScheduler;
+      if (window.TRMNL_PLUGINS_READY !== false && !scheduler?.pending && !scheduler?.inFlight) {
+        break;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 25));
+    }
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     window.scrollTo(0, 0);
     window.BERLIN_TIMES_LAYOUT_READY = true;
   })();

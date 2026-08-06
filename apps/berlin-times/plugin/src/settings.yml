@@ -7,7 +7,6 @@ polling_verb: get
 framework_version: 3.2.0
 polling_url: https://pr0me.github.io/trmnl-apps/edition.json
 polling_headers: ''
-name: Berlin Times
+name: The Berlin Times
 description: Six concise news briefs
 refresh_interval: 60
-

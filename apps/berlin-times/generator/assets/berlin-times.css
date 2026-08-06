@@ -26,8 +26,21 @@
   width: 1872px;
   height: 1404px;
   flex: none;
-  transform: scale(.555555556);
-  transform-origin: top left;
+  zoom: .541310541;
+}
+
+@media (width: 1040px) and (height: 780px) {
+  .screen:has(.bt) {
+    width: 1040px;
+    height: 780px;
+  }
+
+  .screen:has(.bt) .bt {
+    width: 1872px;
+    height: 1404px;
+    flex: none;
+    zoom: .541310541;
+  }
 }
 
 .view:has(.bt) {
@@ -68,11 +81,11 @@
 }
 
 .bt-masthead__name {
-  margin: 0 44px -2px;
+  margin: 0 34px -4px;
   font-family: "Berlin Fraktur", serif;
-  font-size: 78px;
+  font-size: 96px;
   font-weight: 700;
-  line-height: 1;
+  line-height: .92;
   white-space: nowrap;
 }
 
@@ -92,9 +105,11 @@
   line-height: 1.25;
   letter-spacing: .13em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .bt-masthead__side--right {
+  padding-right: 6px;
   text-align: right;
 }
 
