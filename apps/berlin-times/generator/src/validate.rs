@@ -196,7 +196,7 @@ fn validate_category_quotas(edition: &ResearchEdition, report: &mut ValidationRe
     if !edition.stories.iter().any(|story| story.is_breaking) {
         report
             .problems
-            .push("missing breaking or high-impact story".into());
+            .push("missing story marked breaking or high-impact".into());
     }
 }
 
