@@ -17,9 +17,23 @@
   height: 1404px;
 }
 
+.screen.screen--v2:has(.bt) {
+  width: 1040px;
+  height: 780px;
+}
+
+.screen--v2:has(.bt) .bt {
+  width: 1872px;
+  height: 1404px;
+  flex: none;
+  transform: scale(.555555556);
+  transform-origin: top left;
+}
+
 .view:has(.bt) {
   width: 100%;
   height: 100%;
+  overflow: hidden;
 }
 
 .bt {
