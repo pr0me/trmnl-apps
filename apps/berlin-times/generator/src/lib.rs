@@ -113,8 +113,8 @@ async fn research_live(
         .timeout(Duration::from_secs(60))
         .build()?;
     let client = ExaClient::new(http, &options.api_base, api_key)?;
-    let response = client.search(options.at).await?;
-    normalize_and_select(response, options.at, previous)
+    let response = client.search_with_fallback(options.at).await?;
+    normalize_and_select(&response, options.at, previous)
 }
 
 fn validation_report(research: &ResearchEdition, at: DateTime<Utc>) -> validate::ValidationReport {

@@ -6,7 +6,7 @@ The Berlin Times is a private, landscape-only TRMNL X newspaper front page. It p
 GitHub Actions → Exa Search API → GitHub Pages → TRMNL polling → TRMNL X
 ```
 
-The page is deterministic HTML and Liquid, not an AI-generated image. Exa returns ten current, non-duplicate news results with English headlines and summaries in one search. The Rust generator independently enforces freshness and URL safety, removes duplicate canonical URLs, selects six stories, fits copy to the layout, processes one source photograph, and publishes a static Pages artifact. TRMNL polls `edition.json` and renders the e-ink screen.
+The page is deterministic HTML and Liquid, not an AI-generated image. Exa returns ten current news results with English headlines and summaries per search. The Rust generator independently enforces freshness and URL safety, removes duplicate canonical URLs, selects six stories, fits copy to the layout, processes one source photograph, and publishes a static Pages artifact. TRMNL polls `edition.json` and renders the e-ink screen.
 
 ## Contents
 
@@ -49,7 +49,7 @@ EXA_API_KEY=... cargo run --release --bin berlin-times -- generate \
 
 `EXA_API_BASE` exists for isolated API tests and defaults to `https://api.exa.ai/`. The CLI never logs request headers, environment contents, the raw key, or raw article text.
 
-One live, deep-reasoning `POST /search` requests ten news results from The New York Times, Financial Times, Tagesschau, Reuters, rbb24, The Wall Street Journal, and Handelsblatt. It asks Exa for at least two international sources and one German or Berlin source, with no duplicate events between agencies, and forces a live crawl. Its publication filters span the current Europe/Berlin calendar day with DST-correct UTC boundaries. Exa summaries and filters are advisory: the generator checks every result locally. Connection failures, timeouts, `429`, and `5xx` responses are retried up to three total attempts with bounded backoff and `Retry-After` support. Other API errors fail immediately and report Exa's request ID and error tag when available.
+Each live, deep-reasoning `POST /search` requests ten news results from The New York Times, Financial Times, Tagesschau, Reuters, rbb24, The Wall Street Journal, and Handelsblatt. It asks Exa for at least two international sources and one German or Berlin source, with no duplicate events between agencies, and forces a live crawl with `maxAgeHours: 0`. Its publication filters span the current Europe/Berlin calendar day with DST-correct UTC boundaries. Exa summaries and filters are advisory: the generator checks every result locally. If fewer than six results survive those checks, the generator repeats the same uncached search once, combines both responses, and deduplicates canonical URLs before selection. Connection failures, timeouts, `429`, and `5xx` responses are retried up to three total attempts with bounded backoff and `Retry-After` support. Other API errors fail immediately and report Exa's request ID and error tag when available.
 
 The generator logs the request ID, returned/usable/selected counts, provider and category coverage, and Exa's reported request cost.
 

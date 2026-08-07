@@ -10,7 +10,7 @@ use reqwest::{StatusCode, header::RETRY_AFTER};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::time::sleep;
-use tracing::info;
+use tracing::{info, warn};
 use url::Url;
 
 use crate::{
@@ -255,6 +255,33 @@ impl ExaClient {
         self.send_with_retry(&body).await
     }
 
+    pub async fn search_with_fallback(&self, now: DateTime<Utc>) -> Result<ExaResponse> {
+        let mut response = self.search(now).await?;
+        let usable = normalize(&response.results, now)?.len();
+        if usable >= REQUIRED_STORIES {
+            return Ok(response);
+        }
+
+        let initial_request_id = response.request_id.as_deref().unwrap_or("unavailable");
+        warn!(
+            request_id = initial_request_id,
+            usable, "Exa search returned too few usable stories; running fallback"
+        );
+        let fallback = self.search(now).await?;
+        let fallback_request_id = fallback.request_id.as_deref().unwrap_or("unavailable");
+        let fallback_returned = fallback.results.len();
+        response.cost_dollars = combined_cost(response.cost_dollars, fallback.cost_dollars);
+        response.results.extend(fallback.results);
+        info!(
+            initial_request_id,
+            fallback_request_id,
+            fallback_returned,
+            combined_returned = response.results.len(),
+            "Exa fallback search completed"
+        );
+        Ok(response)
+    }
+
     async fn send_with_retry(&self, body: &SearchRequest<'_>) -> Result<ExaResponse> {
         let mut attempt = 0;
         loop {
@@ -323,7 +350,7 @@ fn search_request(now: DateTime<Utc>) -> Result<SearchRequest<'static>> {
 }
 
 pub fn normalize_and_select(
-    response: ExaResponse,
+    response: &ExaResponse,
     now: DateTime<Utc>,
     previous: Option<&EditionV1>,
 ) -> Result<ResearchEdition> {
@@ -331,7 +358,7 @@ pub fn normalize_and_select(
     let request_id = response.request_id.as_deref().unwrap_or("unavailable");
     let search_type = response.search_type.as_deref().unwrap_or("unavailable");
     let cost = response.cost_dollars.as_ref().and_then(|value| value.total);
-    let candidates = normalize(response.results, now)?;
+    let candidates = normalize(&response.results, now)?;
     let usable = candidates.len();
     if usable < REQUIRED_STORIES {
         return Err(GeneratorError::Validation(format!(
@@ -372,7 +399,7 @@ pub fn normalize_and_select(
     Ok(edition)
 }
 
-fn normalize(results: Vec<ExaResult>, now: DateTime<Utc>) -> Result<Vec<Candidate>> {
+fn normalize(results: &[ExaResult], now: DateTime<Utc>) -> Result<Vec<Candidate>> {
     let day = berlin_day(now)?;
     let latest = now
         .checked_add_signed(chrono::Duration::minutes(30))
@@ -380,11 +407,11 @@ fn normalize(results: Vec<ExaResult>, now: DateTime<Utc>) -> Result<Vec<Candidat
     let mut urls = HashSet::new();
     let mut candidates = Vec::<Candidate>::new();
 
-    for (rank, result) in results.into_iter().take(10).enumerate() {
-        let Some(raw_summary) = result.summary else {
+    for (rank, result) in results.iter().enumerate() {
+        let Some(raw_summary) = result.summary.as_deref() else {
             continue;
         };
-        let (title, summary) = title_and_summary(&result.title, &raw_summary);
+        let (title, summary) = title_and_summary(&result.title, raw_summary);
         if title.is_empty()
             || title.contains('<')
             || title.contains('>')
@@ -416,7 +443,11 @@ fn normalize(results: Vec<ExaResult>, now: DateTime<Utc>) -> Result<Vec<Candidat
             continue;
         };
         let categories = classify(&canonical_url, &title, &summary, provider);
-        let image_url = result.image.filter(|value| safe_image_url(value));
+        let image_url = result
+            .image
+            .as_ref()
+            .filter(|value| safe_image_url(value))
+            .cloned();
         candidates.push(Candidate {
             rank,
             canonical_url,
@@ -429,6 +460,22 @@ fn normalize(results: Vec<ExaResult>, now: DateTime<Utc>) -> Result<Vec<Candidat
         });
     }
     Ok(candidates)
+}
+
+fn combined_cost(
+    initial: Option<CostDollars>,
+    fallback: Option<CostDollars>,
+) -> Option<CostDollars> {
+    match (
+        initial.and_then(|cost| cost.total),
+        fallback.and_then(|cost| cost.total),
+    ) {
+        (Some(initial), Some(fallback)) => Some(CostDollars {
+            total: Some(initial + fallback),
+        }),
+        (Some(total), None) | (None, Some(total)) => Some(CostDollars { total: Some(total) }),
+        (None, None) => None,
+    }
 }
 
 fn select<'a>(
@@ -849,7 +896,7 @@ mod tests {
             .ok_or("missing first result")?;
         let duplicate = results.last_mut().ok_or("missing last result")?;
         duplicate.url = duplicate_url;
-        let candidates = normalize(results, now()?)?;
+        let candidates = normalize(&results, now()?)?;
         let day = berlin_day(now()?)?;
         assert_eq!(candidates.len(), 7);
         assert!(
@@ -869,7 +916,7 @@ mod tests {
 
     #[test]
     fn leaves_same_event_detection_to_exa() -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let candidates = normalize(fixture()?.results, now()?)?;
+        let candidates = normalize(&fixture()?.results, now()?)?;
         assert_eq!(candidates.len(), 8);
         assert_eq!(
             candidates
@@ -927,7 +974,8 @@ mod tests {
     #[test]
     fn selects_six_without_turning_preferences_into_blockers()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let edition = normalize_and_select(fixture()?, now()?, None)?;
+        let response = fixture()?;
+        let edition = normalize_and_select(&response, now()?, None)?;
         assert_eq!(edition.stories.len(), 6);
         assert!(edition.stories.iter().all(|story| story.sources.len() == 1));
         assert!(edition.stories.iter().all(|story| !story.is_developing));
@@ -953,7 +1001,7 @@ mod tests {
     fn fails_when_fewer_than_six_survive() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut response = fixture()?;
         response.results.truncate(5);
-        assert!(normalize_and_select(response, now()?, None).is_err());
+        assert!(normalize_and_select(&response, now()?, None).is_err());
         Ok(())
     }
 
@@ -992,6 +1040,93 @@ mod tests {
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
         let response = client.search(now()?).await?;
         assert_eq!(response.request_id.as_deref(), Some("retried"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reruns_and_combines_search_when_too_few_stories_survive()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        let mut initial = serde_json::from_str::<serde_json::Value>(include_str!(
+            "../fixtures/exa-response.json"
+        ))?;
+        initial["requestId"] = json!("initial-search");
+        let initial_results = initial["results"]
+            .as_array_mut()
+            .ok_or("fixture results must be an array")?;
+        initial_results.truncate(5);
+        let mut fallback = serde_json::from_str::<serde_json::Value>(include_str!(
+            "../fixtures/exa-response.json"
+        ))?;
+        fallback["requestId"] = json!("fallback-search");
+
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(initial))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(fallback))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let base = Url::parse(&format!("{}/", server.uri()))?;
+        let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
+        let response = client.search_with_fallback(now()?).await?;
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("request recording is disabled")?;
+        assert_eq!(requests.len(), 2);
+        let bodies = requests
+            .iter()
+            .map(|request| serde_json::from_slice::<serde_json::Value>(&request.body))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert_eq!(bodies.first(), bodies.get(1));
+        assert!(
+            bodies
+                .iter()
+                .all(|body| body["contents"]["maxAgeHours"] == 0)
+        );
+        assert_eq!(normalize(&response.results, now()?)?.len(), 8);
+        assert_eq!(
+            response.cost_dollars.as_ref().and_then(|cost| cost.total),
+            Some(0.034)
+        );
+        assert_eq!(
+            normalize_and_select(&response, now()?, None)?.stories.len(),
+            6
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn does_not_rerun_search_when_enough_stories_survive()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        let response = serde_json::from_str::<serde_json::Value>(include_str!(
+            "../fixtures/exa-response.json"
+        ))?;
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let base = Url::parse(&format!("{}/", server.uri()))?;
+        let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
+        let response = client.search_with_fallback(now()?).await?;
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("request recording is disabled")?;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(response.results.len(), 10);
         Ok(())
     }
 
