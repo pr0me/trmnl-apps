@@ -1,0 +1,24 @@
+---
+strategy: polling
+no_screen_padding: 'no'
+dark_mode: 'no'
+static_data: ''
+polling_verb: get
+framework_version: 3.2.0
+serverless_language: node
+polling_url: https://trmnl.com/custom_plugin_example_data.json
+polling_headers: ''
+polling_body:
+name: Berlin Family Dashboard
+description: Weather, calendar and BVG
+refresh_interval: 15
+custom_fields:
+  - keyname: calendar_plugin_setting_id
+    name: Calendar plugin setting ID
+    field_type: number
+    default: 409973
+    description: Integer ID of the hidden Google Calendar instance configured only for the Familie calendar.
+  - keyname: trmnl_user_api_key
+    name: TRMNL user API key
+    field_type: password
+    description: User API key from the TRMNL account page. Used only to read the selected calendar instance.

@@ -1,0 +1,38 @@
+{
+  "now": "2026-11-03T06:30:00Z",
+  "errors": ["weather", "hohenschoenhausen"],
+  "calendar": {
+    "data": {
+      "events": [
+        {
+          "summary": "Kinderarzt",
+          "date_time": "2026-11-03T09:30:00+01:00",
+          "start_full": "2026-11-03T09:30:00+01:00",
+          "end_full": "2026-11-03T10:15:00+01:00",
+          "all_day": false
+        },
+        {
+          "summary": "Geburtstag Oma",
+          "date_time": "2026-11-07",
+          "start_full": "2026-11-07",
+          "end_full": "2026-11-08",
+          "all_day": true
+        }
+      ]
+    }
+  },
+  "weather": {},
+  "city": {
+    "departures": [
+      {
+        "when": "2026-11-03T07:39:00+01:00",
+        "plannedWhen": "2026-11-03T07:39:00+01:00",
+        "delay": 0,
+        "direction": "S+U Hauptbahnhof",
+        "line": { "name": "M5" }
+      }
+    ]
+  },
+  "hohenschoenhausen": {}
+}
+

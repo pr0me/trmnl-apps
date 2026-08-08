@@ -1,0 +1,140 @@
+<div class="fd">
+  <main class="fd-board">
+    <section class="fd-weather">
+      <div class="fd-today">
+        <div class="fd-section-heading">
+          <span>Heute</span>
+          {% if weather %}<span class="fd-section-heading__minor">{{ weather.days[0].weekday }} · {{ weather.days[0].date_label }}</span>{% endif %}
+        </div>
+        {% if weather %}
+          <div class="fd-today__body">
+            <svg class="fd-today__glyph" role="img" aria-label="{{ weather.days[0].state_label | escape }}"><use href="#fd-glyph-{{ weather.days[0].glyph | escape }}"></use></svg>
+            <div class="fd-today__reading">
+              <div>
+                <div class="fd-current">{{ weather.current_c }}<span class="fd-current__degree">°</span></div>
+                <div class="fd-current__condition">{{ weather.days[0].state_label | escape }}</div>
+              </div>
+              <div class="fd-metrics">
+                <div class="fd-metric">
+                  <span class="fd-metric__value">{{ weather.humidity_pct }}%</span>
+                  <span class="fd-metric__label">Luftfeuchte</span>
+                </div>
+                <div class="fd-metric">
+                  <span class="fd-metric__value">{{ weather.days[0].max_c }}°</span>
+                  <span class="fd-metric__label">Maximum</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        {% else %}
+          <div class="fd-empty">Wetter derzeit nicht verfügbar</div>
+        {% endif %}
+      </div>
+
+      <div class="fd-forecast">
+        {% if weather %}
+          {% for day in weather.days offset: 1 limit: 3 %}
+            <article class="fd-day">
+              <div class="fd-day__heading">
+                <span>{{ day.weekday | escape }}</span>
+                <span class="fd-day__date">{{ day.date_label | escape }}</span>
+              </div>
+              <svg class="fd-day__glyph" role="img" aria-label="{{ day.state_label | escape }}"><use href="#fd-glyph-{{ day.glyph | escape }}"></use></svg>
+              <div class="fd-day__condition">{{ day.state_label | escape }}</div>
+              <div class="fd-day__maximum">{{ day.max_c }}°</div>
+            </article>
+          {% endfor %}
+        {% else %}
+          <div class="fd-empty">Keine Vorhersage</div>
+        {% endif %}
+      </div>
+    </section>
+
+    <div class="fd-divider"></div>
+
+    <section class="fd-right">
+      <section class="fd-events">
+        <div class="fd-section-heading">
+          <span>Nächste Termine</span>
+          <span class="fd-section-heading__minor">Familie</span>
+        </div>
+        {% if source_status.calendar == "error" %}
+          <div class="fd-empty">Kalender derzeit nicht verfügbar</div>
+        {% elsif events.size == 0 %}
+          <div class="fd-empty">Keine anstehenden Termine</div>
+        {% else %}
+          <div class="fd-event-list">
+            {% for event in events limit: 5 %}
+              <article class="fd-event">
+                <div class="fd-event__date">
+                  <span class="fd-event__weekday">{{ event.weekday | escape }}</span>
+                  <span class="fd-event__day">{{ event.date_label | escape }}</span>
+                </div>
+                <h2 class="fd-event__title">{{ event.title | escape }}</h2>
+                <time class="fd-event__time{% if event.all_day %} fd-event__time--all-day{% endif %}">{{ event.time | escape }}</time>
+              </article>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </section>
+
+      <div class="fd-rule"></div>
+
+      <section class="fd-transit">
+        <div class="fd-section-heading">
+          <span>Ab Simon-Bolivar-Str.</span>
+          <span class="fd-section-heading__minor">Tram</span>
+        </div>
+        <div class="fd-transit__body">
+          {% assign directions = "city,hohenschoenhausen" | split: "," %}
+          {% for direction in directions %}
+            {% if direction == "city" %}
+              {% assign direction_label = "Innenstadt" %}
+              {% assign direction_departures = departures.city %}
+              {% assign direction_status = source_status.city %}
+            {% else %}
+              {% assign direction_departures = departures.hohenschoenhausen %}
+              {% assign direction_status = source_status.hohenschoenhausen %}
+            {% endif %}
+            <div class="fd-direction" data-direction="{{ direction | escape }}">
+              <div class="fd-direction__heading">
+                {% if direction == "city" %}{{ direction_label | escape }}{% else %}<span>Hohen<br>schönhausen</span>{% endif %}
+              </div>
+              {% if direction_status == "error" %}
+                <div class="fd-empty">Derzeit nicht verfügbar</div>
+              {% elsif direction_departures.size == 0 %}
+                <div class="fd-empty">Keine Abfahrten</div>
+              {% else %}
+                <div class="fd-departures">
+                  {% for departure in direction_departures limit: 2 %}
+                    <article class="fd-departure">
+                      <span class="fd-departure__line">{{ departure.line | escape }}</span>
+                      <span class="fd-departure__destination">{{ departure.destination | escape }}</span>
+                      <span class="fd-departure__delay">{{ departure.delay_label | escape }}</span>
+                      <time class="fd-departure__time">{{ departure.time | escape }}</time>
+                    </article>
+                  {% endfor %}
+                </div>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <footer class="fd-footer">
+    <span>Stand {{ generated_time | escape }} · Wetter: Open-Meteo</span>
+    <span>Verkehr: transport.rest / BVG</span>
+  </footer>
+</div>
+
+<script>
+  window.FAMILY_DASHBOARD_READY = false;
+  void (async () => {
+    await document.fonts.ready;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    window.scrollTo(0, 0);
+    window.FAMILY_DASHBOARD_READY = true;
+  })();
+</script>
