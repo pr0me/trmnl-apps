@@ -125,7 +125,7 @@ const SCIENCE_TERMS: &[&str] = &[
 
 pub const SEARCH_QUERY: &str = "Today’s most important news in global politics OR global economics OR Berlin and Germany OR consequential technology";
 pub const SYSTEM_PROMPT: &str = "Provide results from at least 3 sources (2 international and 1 German/Berlin one). Make sure to not emit news items that are duplicates between agencies.\nPrefer current reporting over analysis or opinion";
-pub const SUMMARY_PROMPT: &str = "As your first line, output `Title: {english_title}\\n`, providing translations for German titles.\nSummarize the news article in 2-4 English sentences / 40-60 words.\nDeliver the gist. Write the summary as it would appear in a newspaper itself; do not use \"Summary:\", \"The article explains\" or alike.";
+pub const SUMMARY_PROMPT: &str = "As your first line, output `Title: {english_title}\\n`, providing translations for German titles.\nSummarize the news article in 2 short English sentences / 30-45 words. Make the first sentence self-contained and no longer than 30 words.\nDeliver the gist. Write the summary as it would appear in a newspaper itself; do not use \"Summary:\", \"The article explains\" or alike.";
 pub const DOMAINS: &[&str] = &[
     "nytimes.com",
     "ft.com",
@@ -640,7 +640,7 @@ fn classify(url: &str, title: &str, summary: &str, provider: &str) -> Vec<Catego
     categories
 }
 
-fn fit_summary(summary: &str, limit: usize) -> String {
+pub(crate) fn fit_summary(summary: &str, limit: usize) -> String {
     let sentences = leading_sentences(summary).collect::<Vec<_>>();
     let first = sentences.first().copied().unwrap_or(summary).trim();
     if word_count(first) > limit {

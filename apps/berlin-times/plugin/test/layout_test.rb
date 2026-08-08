@@ -5,6 +5,7 @@ require 'selenium-webdriver'
 WIDTH = 1872
 HEIGHT = 1404
 MAX_PHOTO_AREA = 0.18
+MIN_SUMMARY_FONT_SIZE = 34
 
 options = Selenium::WebDriver::Firefox::Options.new
 options.add_argument('--headless')
@@ -92,6 +93,14 @@ begin
           })
           .map((element) => `${story.dataset.storyId}:${element.className || element.tagName}`);
       });
+    const summaries = Array.from(document.querySelectorAll('.bt-summary'));
+    const borderedStories = Array.from(document.querySelectorAll('.bt-story'))
+      .filter((story) => {
+        const style = getComputedStyle(story);
+        return ['Top', 'Right', 'Bottom', 'Left']
+          .some((side) => Number.parseFloat(style[`border${side}Width`]) > 0);
+      })
+      .map((story) => story.dataset.storyId);
     return {
       articles: document.querySelectorAll('.bt-story').length,
       headlines: document.querySelectorAll('.bt-headline').length,
@@ -110,6 +119,11 @@ begin
       datelineHeight: datelineBox?.height,
       screenWidth: screen?.getBoundingClientRect().width,
       screenHeight: screen?.getBoundingClientRect().height,
+      minimumSummaryFontSize: Math.min(...summaries.map((summary) =>
+        Number.parseFloat(getComputedStyle(summary).fontSize))),
+      clampedSummaries: summaries
+        .filter((summary) => getComputedStyle(summary).webkitLineClamp !== 'none')
+        .map((summary) => summary.closest('[data-story-id]')?.dataset.storyId),
       clamped: Array.from(document.querySelectorAll('.bt-headline, .bt-summary'))
         .map((element) => {
           const range = document.createRange();
@@ -131,7 +145,8 @@ begin
           lineLimit
         })),
       outside,
-      storyOverflow
+      storyOverflow,
+      borderedStories
     };
   JS
 
@@ -151,10 +166,16 @@ begin
   failures << "page height is #{result['pageHeight']}" if result['pageHeight'].to_f <= 0
   failures << "page scroll is #{result['pageScrollTop']}" unless result['pageScrollTop'].to_f.round.zero?
   failures << "masthead top is #{result['mastheadTop']}" unless result['mastheadTop'].to_f.round == 10
-  failures << "masthead height is #{result['mastheadHeight']}" unless result['mastheadHeight'].to_f.round == 126
-  failures << "dateline top is #{result['datelineTop']}" unless result['datelineTop'].to_f.round == 136
-  failures << "dateline height is #{result['datelineHeight']}" unless result['datelineHeight'].to_f.round == 43
-  failures << "content top is #{result['contentTop']}" unless result['contentTop'].to_f.round == 179
+  failures << "masthead height is #{result['mastheadHeight']}" unless result['mastheadHeight'].to_f.round == 118
+  failures << "dateline top is #{result['datelineTop']}" unless result['datelineTop'].to_f.round == 128
+  failures << "dateline height is #{result['datelineHeight']}" unless result['datelineHeight'].to_f.round == 42
+  failures << "content top is #{result['contentTop']}" unless result['contentTop'].to_f.round == 170
+  if result['minimumSummaryFontSize'].to_f < MIN_SUMMARY_FONT_SIZE
+    failures << "minimum summary font size is #{result['minimumSummaryFontSize']}"
+  end
+  unless result['clampedSummaries'].empty?
+    failures << "summaries are clamped: #{result['clampedSummaries'].join(', ')}"
+  end
   unless result['clamped'].empty?
     details = result['clamped'].map do |clamp|
       "#{clamp['story']} #{clamp['kind']} #{clamp['lineCount']}/#{clamp['lineLimit']} lines"
@@ -164,6 +185,9 @@ begin
   failures << "elements exceed page: #{result['outside'].join(', ')}" unless result['outside'].empty?
   unless result['storyOverflow'].empty?
     failures << "elements exceed story: #{result['storyOverflow'].join(', ')}"
+  end
+  unless result['borderedStories'].empty?
+    failures << "stories have separator borders: #{result['borderedStories'].join(', ')}"
   end
 
   abort(failures.join("\n")) unless failures.empty?

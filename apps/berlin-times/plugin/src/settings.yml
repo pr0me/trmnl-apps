@@ -5,8 +5,11 @@ dark_mode: 'no'
 static_data: ''
 polling_verb: get
 framework_version: 3.2.0
+serverless_language:
 polling_url: https://pr0me.github.io/trmnl-apps/edition.json
 polling_headers: ''
+polling_body:
+id: 408797
 name: The Berlin Times
 description: Six concise news briefs
 refresh_interval: 60

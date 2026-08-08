@@ -17,7 +17,7 @@ use url::Url;
 
 use crate::{
     error::{GeneratorError, Result, io_error},
-    exa::{ExaClient, normalize_and_select},
+    exa::{ExaClient, fit_summary, normalize_and_select},
     model::{EditionV1, ResearchEdition},
     photo::{SafeHttp, fixture_photo},
 };
@@ -81,6 +81,7 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
     };
 
     promote_photo_story(&mut research, &photo.story_id)?;
+    fit_layout_summaries(&mut research);
     validate_result(&research, options.at)?;
 
     let (edition, photo_name) =
@@ -212,6 +213,17 @@ fn promote_photo_story(edition: &mut ResearchEdition, story_id: &str) -> Result<
     Ok(())
 }
 
+fn fit_layout_summaries(edition: &mut ResearchEdition) {
+    edition
+        .stories
+        .iter_mut()
+        .enumerate()
+        .for_each(|(index, story)| {
+            let limit = if index == 0 { 36 } else { 30 };
+            story.summary = fit_summary(&story.summary, limit);
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -220,7 +232,9 @@ mod tests {
     use tempfile::tempdir;
     use url::Url;
 
-    use super::{GenerateOptions, generate, previous_photo_name, promote_photo_story};
+    use super::{
+        GenerateOptions, fit_layout_summaries, generate, previous_photo_name, promote_photo_story,
+    };
     use crate::model::ResearchEdition;
 
     #[tokio::test]
@@ -289,6 +303,47 @@ mod tests {
             Some(&story_id)
         );
         assert_eq!(edition.photo_candidates.first(), Some(&story_id));
+        Ok(())
+    }
+
+    #[test]
+    fn fits_summaries_after_promoting_lead_story()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut edition = serde_json::from_str::<ResearchEdition>(include_str!(
+            "../fixtures/valid-research.json"
+        ))?;
+        let summary = (0..40).map(|_| "word").collect::<Vec<_>>().join(" ");
+        edition
+            .stories
+            .iter_mut()
+            .for_each(|story| story.summary = format!("{summary}."));
+        let story_id = edition
+            .stories
+            .get(2)
+            .map(|story| story.id.clone())
+            .ok_or("fixture must contain third story")?;
+
+        promote_photo_story(&mut edition, &story_id)?;
+        fit_layout_summaries(&mut edition);
+
+        assert_eq!(
+            edition.stories.first().map(|story| &story.id),
+            Some(&story_id)
+        );
+        assert_eq!(
+            edition
+                .stories
+                .first()
+                .map(|story| story.summary.split_whitespace().count()),
+            Some(36)
+        );
+        assert!(
+            edition
+                .stories
+                .iter()
+                .skip(1)
+                .all(|story| { story.summary.split_whitespace().count() <= 30 })
+        );
         Ok(())
     }
 }

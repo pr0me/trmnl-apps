@@ -19,62 +19,60 @@
     <span>Next edition {{ next_scheduled_at | date: "%H:%M" }} Berlin</span>
   </div>
 
-  <div class="bt-page">
-    <main class="bt-main">
-      <article class="bt-feature bt-story" data-story-id="{{ lead.id | escape }}">
-        <div class="bt-feature__copy">
-          <p class="bt-kicker{% if lead.is_developing %} bt-kicker__developing{% endif %}">{{ lead.primary_category | replace: "_", " " | escape }}</p>
-          <h2 class="bt-headline">{{ lead.headline | escape }}</h2>
-          <p class="bt-summary">{{ lead.summary | escape }}</p>
-          <p class="bt-byline">{{ lead.sources | map: "name" | join: " · " | escape }} · {{ lead.published_at | date: "%H:%M UTC" }}</p>
-        </div>
-
-        <figure class="bt-photo">
-          <img class="image image-dither image--cover" src="{{ bt_lead_image_url | escape }}" alt="{{ lead_image.alt | escape }}">
-          <figcaption class="bt-caption">Photograph: {{ lead_image.credit | escape }}{% if photo_story.id != lead.id %} · {{ photo_story.headline | escape }}{% endif %}</figcaption>
-        </figure>
+  <main class="bt-page">
+    <div class="bt-column bt-column--lead">
+      <article class="bt-story bt-story--lead" data-story-id="{{ lead.id | escape }}">
+        <p class="bt-kicker{% if lead.is_developing %} bt-kicker__developing{% endif %}">{{ lead.primary_category | replace: "_", " " | escape }}</p>
+        <h2 class="bt-headline">{{ lead.headline | escape }}</h2>
+        <p class="bt-summary">{{ lead.summary | escape }}</p>
+        <p class="bt-byline">{{ lead.sources | map: "name" | join: " · " | escape }} · {{ lead.published_at | date: "%H:%M UTC" }}</p>
       </article>
 
-      <section class="bt-secondary">
-        <article class="bt-story" data-story-id="{{ secondary_one.id | escape }}">
-          <p class="bt-kicker{% if secondary_one.is_developing %} bt-kicker__developing{% endif %}">{{ secondary_one.primary_category | replace: "_", " " | escape }}</p>
-          <h2 class="bt-headline">{{ secondary_one.headline | escape }}</h2>
-          <p class="bt-summary">{{ secondary_one.summary | escape }}</p>
-          <p class="bt-byline">{{ secondary_one.sources | map: "name" | join: " · " | escape }} · {{ secondary_one.published_at | date: "%H:%M UTC" }}</p>
-        </article>
+      <article class="bt-story bt-story--standard" data-story-id="{{ secondary_one.id | escape }}">
+        <p class="bt-kicker{% if secondary_one.is_developing %} bt-kicker__developing{% endif %}">{{ secondary_one.primary_category | replace: "_", " " | escape }}</p>
+        <h2 class="bt-headline">{{ secondary_one.headline | escape }}</h2>
+        <p class="bt-summary">{{ secondary_one.summary | escape }}</p>
+        <p class="bt-byline">{{ secondary_one.sources | map: "name" | join: " · " | escape }} · {{ secondary_one.published_at | date: "%H:%M UTC" }}</p>
+      </article>
+    </div>
 
-        <article class="bt-story" data-story-id="{{ secondary_two.id | escape }}">
-          <p class="bt-kicker{% if secondary_two.is_developing %} bt-kicker__developing{% endif %}">{{ secondary_two.primary_category | replace: "_", " " | escape }}</p>
-          <h2 class="bt-headline">{{ secondary_two.headline | escape }}</h2>
-          <p class="bt-summary">{{ secondary_two.summary | escape }}</p>
-          <p class="bt-byline">{{ secondary_two.sources | map: "name" | join: " · " | escape }} · {{ secondary_two.published_at | date: "%H:%M UTC" }}</p>
-        </article>
-      </section>
-    </main>
+    <div class="bt-column bt-column--visual">
+      <figure class="bt-photo">
+        <img class="image image--cover" src="{{ bt_lead_image_url | escape }}" alt="{{ lead_image.alt | escape }}">
+        <figcaption class="bt-caption">Photograph: {{ lead_image.credit | escape }}{% if photo_story.id != lead.id %} · {{ photo_story.headline | escape }}{% endif %}</figcaption>
+      </figure>
 
-    <aside class="bt-rail">
-      <article class="bt-story" data-story-id="{{ rail_one.id | escape }}">
+      <article class="bt-story bt-story--compact" data-story-id="{{ secondary_two.id | escape }}">
+        <p class="bt-kicker{% if secondary_two.is_developing %} bt-kicker__developing{% endif %}">{{ secondary_two.primary_category | replace: "_", " " | escape }}</p>
+        <h2 class="bt-headline">{{ secondary_two.headline | escape }}</h2>
+        <p class="bt-summary">{{ secondary_two.summary | escape }}</p>
+        <p class="bt-byline">{{ secondary_two.sources | map: "name" | join: " · " | escape }} · {{ secondary_two.published_at | date: "%H:%M UTC" }}</p>
+      </article>
+
+      <article class="bt-story bt-story--compact" data-story-id="{{ rail_one.id | escape }}">
         <p class="bt-kicker{% if rail_one.is_developing %} bt-kicker__developing{% endif %}">{{ rail_one.primary_category | replace: "_", " " | escape }}</p>
         <h2 class="bt-headline">{{ rail_one.headline | escape }}</h2>
         <p class="bt-summary">{{ rail_one.summary | escape }}</p>
         <p class="bt-byline">{{ rail_one.sources | map: "name" | join: " · " | escape }} · {{ rail_one.published_at | date: "%H:%M UTC" }}</p>
       </article>
+    </div>
 
-      <article class="bt-story" data-story-id="{{ rail_two.id | escape }}">
+    <div class="bt-column bt-column--briefs">
+      <article class="bt-story bt-story--prominent" data-story-id="{{ rail_two.id | escape }}">
         <p class="bt-kicker{% if rail_two.is_developing %} bt-kicker__developing{% endif %}">{{ rail_two.primary_category | replace: "_", " " | escape }}</p>
         <h2 class="bt-headline">{{ rail_two.headline | escape }}</h2>
         <p class="bt-summary">{{ rail_two.summary | escape }}</p>
         <p class="bt-byline">{{ rail_two.sources | map: "name" | join: " · " | escape }} · {{ rail_two.published_at | date: "%H:%M UTC" }}</p>
       </article>
 
-      <article class="bt-story" data-story-id="{{ rail_three.id | escape }}">
+      <article class="bt-story bt-story--prominent" data-story-id="{{ rail_three.id | escape }}">
         <p class="bt-kicker{% if rail_three.is_developing %} bt-kicker__developing{% endif %}">{{ rail_three.primary_category | replace: "_", " " | escape }}</p>
         <h2 class="bt-headline">{{ rail_three.headline | escape }}</h2>
         <p class="bt-summary">{{ rail_three.summary | escape }}</p>
         <p class="bt-byline">{{ rail_three.sources | map: "name" | join: " · " | escape }} · {{ rail_three.published_at | date: "%H:%M UTC" }}</p>
       </article>
-    </aside>
-  </div>
+    </div>
+  </main>
 </div>
 
 <script>
