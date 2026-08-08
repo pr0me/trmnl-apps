@@ -1,8 +1,11 @@
 # TRMNL Apps
 
-Private TRMNL plugins and their supporting generators.
+Private TRMNL plugins and their supporting generators, maintained in one repository with app-scoped builds, deployment paths, and GitHub Actions.
 
-The first app is [The Berlin Times](apps/berlin-times/README.md), a twice-daily news front page with source-language headlines and English summaries, designed exclusively for TRMNL X in landscape mode.
+- [The Berlin Times](apps/berlin-times/README.md) is a twice-daily news front page backed by a Rust generator and GitHub Pages.
+- [Berlin Family Dashboard](apps/family-dashboard/README.md) combines local weather, the shared `Familie` calendar, and departures from Simon-Bolivar-Straße in one serverless plugin.
+
+Each app owns its code, plugin definition, fixtures, tests, generated output, and operational documentation beneath `apps/<app>`. The Berlin Times publication workflow remains the repository's only Pages deployer. Family Dashboard fetches its sources inside TRMNL Serverless and neither reads nor writes `_site`.
 
 ## Repository checks
 
@@ -10,9 +13,10 @@ The first app is [The Berlin Times](apps/berlin-times/README.md), a twice-daily 
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-features --locked
+node --test apps/family-dashboard/plugin/test/transform_test.js
 ```
 
-The pull-request workflow is secret-free. It also generates a fixed edition, lints the private plugin, renders a 1872×1404 4-bit PNG, and verifies the layout in a headless browser.
+Both pull-request workflows are secret-free and path-filtered. A change contained in one app runs only that app's workflow. Each plugin is mounted from its own directory for `trmnlp lint`, `build`, and `push`, so its `settings.yml`, server-assigned plugin ID, cache, and build output cannot affect the other app.
 
 ## License
 

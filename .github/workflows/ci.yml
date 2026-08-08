@@ -1,10 +1,22 @@
-name: CI
+name: The Berlin Times CI
 
 on:
   pull_request:
+    paths:
+      - .github/workflows/ci.yml
+      - apps/berlin-times/**
+      - Cargo.lock
+      - Cargo.toml
+      - rustfmt.toml
   push:
     branches:
       - main
+    paths:
+      - .github/workflows/ci.yml
+      - apps/berlin-times/**
+      - Cargo.lock
+      - Cargo.toml
+      - rustfmt.toml
 
 permissions:
   contents: read

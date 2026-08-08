@@ -1,0 +1,126 @@
+name: Family Dashboard CI
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/family-dashboard-ci.yml
+      - apps/family-dashboard/**
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/family-dashboard-ci.yml
+      - apps/family-dashboard/**
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Test serverless transform
+        run: node --test apps/family-dashboard/plugin/test/transform_test.js
+
+      - name: Validate fixture server
+        run: python3 -m py_compile apps/family-dashboard/plugin/test/fixture_server.py
+
+      - name: Lint TRMNL plugin
+        run: >-
+          docker run --rm --pull always
+          -v "$PWD/apps/family-dashboard/plugin:/plugin"
+          trmnl/trmnlp:latest lint
+
+  render:
+    name: Render (${{ matrix.variant }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: typical
+            weather_days: 3
+            events: 5
+            city: 2
+            hohenschoenhausen: 2
+          - variant: maximum
+            weather_days: 3
+            events: 5
+            city: 2
+            hohenschoenhausen: 2
+          - variant: degraded
+            weather_days: 0
+            events: 2
+            city: 1
+            hohenschoenhausen: 0
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Serve deterministic sources
+        env:
+          FIXTURE_VARIANT: ${{ matrix.variant }}
+        run: |
+          nohup python3 apps/family-dashboard/plugin/test/fixture_server.py \
+            apps/family-dashboard/plugin/test/fixtures \
+            --plugin-build apps/family-dashboard/plugin/_build \
+            --variant "$FIXTURE_VARIANT" >/tmp/family-dashboard-http.log 2>&1 &
+          for _ in {1..20}; do
+            if curl --fail --silent http://localhost:8010/seed >/dev/null; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          cat /tmp/family-dashboard-http.log
+          exit 1
+
+      - name: Render TRMNL X fixture
+        run: >-
+          docker run --rm --pull always
+          --add-host=host.docker.internal:host-gateway
+          -v "$PWD/apps/family-dashboard/plugin:/plugin"
+          trmnl/trmnlp:latest build --quiet --png
+          --width 1872 --height 1404 --color-depth 4
+
+      - name: Verify rendered layout
+        env:
+          LAYOUT_URL: http://host.docker.internal:8010/__plugin__/full.html
+          EXPECTED_WEATHER_DAYS: ${{ matrix.weather_days }}
+          EXPECTED_EVENTS: ${{ matrix.events }}
+          EXPECTED_CITY: ${{ matrix.city }}
+          EXPECTED_HOHENSCHOENHAUSEN: ${{ matrix.hohenschoenhausen }}
+        run: >-
+          docker run --rm
+          --add-host=host.docker.internal:host-gateway
+          -e LAYOUT_URL
+          -e EXPECTED_WEATHER_DAYS
+          -e EXPECTED_EVENTS
+          -e EXPECTED_CITY
+          -e EXPECTED_HOHENSCHOENHAUSEN
+          --entrypoint /usr/local/bin/ruby
+          -v "$PWD/apps/family-dashboard/plugin:/plugin"
+          trmnl/trmnlp:latest test/layout_test.rb
+
+      - name: Verify render dimensions and palette
+        run: |
+          read -r width height colors <<< "$(docker run --rm --entrypoint magick -v "$PWD/apps/family-dashboard/plugin/_build:/images" trmnl/trmnlp:latest identify -format '%w %h %k' /images/full.png)"
+          test "$width" = "1872"
+          test "$height" = "1404"
+          test "$colors" -le 16
+
+      - name: Make renders readable
+        run: >-
+          docker run --rm
+          --entrypoint chmod
+          -v "$PWD/apps/family-dashboard/plugin/_build:/images"
+          trmnl/trmnlp:latest 0644 /images/full.png /images/layout.png
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: family-dashboard-render-${{ matrix.variant }}
+          path: |
+            apps/family-dashboard/plugin/_build/full.png
+            apps/family-dashboard/plugin/_build/layout.png
+            apps/family-dashboard/plugin/test/golden/${{ matrix.variant }}.png
