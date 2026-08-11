@@ -5,11 +5,22 @@ use url::Url;
 
 use crate::{
     error::{GeneratorError, Result},
-    model::ResearchEdition,
+    model::{EditionName, ResearchEdition},
     schedule::berlin_day,
 };
 
 const TRACKING_PARAMETERS: &[&str] = &["fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"];
+
+pub(crate) const MORNING_DOMAINS: &[&str] = &["wsj.com", "nytimes.com", "ft.com", "reuters.com"];
+pub(crate) const EVENING_DOMAINS: &[&str] =
+    &["handelsblatt.com", "tagesschau.de", "ft.com", "dw.com"];
+
+pub(crate) fn domains_for_edition(edition: &EditionName) -> &'static [&'static str] {
+    match edition {
+        EditionName::Morning => MORNING_DOMAINS,
+        EditionName::Evening => EVENING_DOMAINS,
+    }
+}
 
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct ValidationReport {
@@ -45,6 +56,11 @@ pub fn validate_edition(edition: &ResearchEdition, now: DateTime<Utc>) -> Valida
             edition.stories.len()
         ));
     }
+    if edition.stories.first().is_none_or(|story| story.is_carried) {
+        report
+            .problems
+            .push("story 0 must be a fresh, non-carried story".into());
+    }
     validate_story_identity(edition, &mut report);
     validate_photo_candidates(edition, &mut report);
     edition
@@ -56,7 +72,7 @@ pub fn validate_edition(edition: &ResearchEdition, now: DateTime<Utc>) -> Valida
             validate_plain_text(&story.headline, "headline", &prefix, &mut report);
             validate_plain_text(&story.summary, "summary", &prefix, &mut report);
             validate_copy(index, story, &prefix, &mut report);
-            validate_freshness(story.published_at, now, &prefix, &mut report);
+            validate_freshness(story, now, &prefix, &mut report);
             validate_source(story, &prefix, &mut report);
         });
     report
@@ -150,11 +166,21 @@ pub fn article_url_allowed(value: &str) -> bool {
 
 #[must_use]
 pub fn provider_name(value: &str) -> Option<&'static str> {
-    let host = Url::parse(value).ok()?.host_str()?.to_ascii_lowercase();
+    let domain = provider_domain(value)?;
     PROVIDERS
         .iter()
-        .find(|(domain, _)| host == *domain || host.ends_with(&format!(".{domain}")))
-        .map(|(_, name)| *name)
+        .find_map(|(candidate, name)| (*candidate == domain).then_some(*name))
+}
+
+pub(crate) fn provider_domain(value: &str) -> Option<&'static str> {
+    let host = Url::parse(value).ok()?.host_str()?.to_ascii_lowercase();
+    PROVIDERS.iter().find_map(|(domain, _)| {
+        (host == *domain
+            || host
+                .strip_suffix(domain)
+                .is_some_and(|prefix| prefix.ends_with('.')))
+        .then_some(*domain)
+    })
 }
 
 const PROVIDERS: &[(&str, &str)] = &[
@@ -165,6 +191,7 @@ const PROVIDERS: &[(&str, &str)] = &[
     ("rbb24.de", "rbb24"),
     ("wsj.com", "The Wall Street Journal"),
     ("handelsblatt.com", "Handelsblatt"),
+    ("dw.com", "DW"),
 ];
 
 fn validate_story_identity(edition: &ResearchEdition, report: &mut ValidationReport) {
@@ -242,26 +269,39 @@ fn validate_copy(
 }
 
 fn validate_freshness(
-    published_at: DateTime<Utc>,
+    story: &crate::model::ResearchStory,
     now: DateTime<Utc>,
     prefix: &str,
     report: &mut ValidationReport,
 ) {
-    let Ok(day) = berlin_day(now) else {
-        report
-            .problems
-            .push("could not determine berlin calendar day".into());
-        return;
-    };
-    if published_at < day.start || published_at >= day.end {
-        report
-            .problems
-            .push(format!("{prefix} is outside current berlin calendar day"));
-    }
-    if published_at > now + Duration::minutes(30) {
+    let latest = now + Duration::minutes(30);
+    if story.published_at > latest {
         report
             .problems
             .push(format!("{prefix} publication time is in future"));
+    }
+    if story.is_carried {
+        return;
+    }
+
+    let earliest = berlin_day(now)
+        .and_then(|day| {
+            day.start
+                .checked_sub_signed(Duration::milliseconds(1))
+                .ok_or_else(|| GeneratorError::Config("cannot calculate freshness boundary".into()))
+        })
+        .and_then(berlin_day)
+        .map(|day| day.start);
+    let Ok(earliest) = earliest else {
+        report
+            .problems
+            .push("could not determine berlin freshness boundary".into());
+        return;
+    };
+    if story.published_at < earliest {
+        report
+            .problems
+            .push(format!("{prefix} is outside requested publication windows"));
     }
 }
 
@@ -300,10 +340,23 @@ fn word_count(value: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{TimeZone, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
 
-    use super::{article_url_allowed, canonicalize_url, provider_name, validate_edition};
-    use crate::model::ResearchEdition;
+    use super::{
+        EVENING_DOMAINS, MORNING_DOMAINS, article_url_allowed, canonicalize_url,
+        domains_for_edition, provider_domain, provider_name, validate_edition,
+    };
+    use crate::model::{EditionName, ResearchEdition};
+
+    fn fixture() -> std::result::Result<ResearchEdition, serde_json::Error> {
+        serde_json::from_str(include_str!("../fixtures/valid-research.json"))
+    }
+
+    fn now() -> std::result::Result<DateTime<Utc>, Box<dyn std::error::Error>> {
+        Utc.with_ymd_and_hms(2026, 8, 5, 4, 15, 0)
+            .single()
+            .ok_or_else(|| "fixed time must exist".into())
+    }
 
     #[test]
     fn canonicalizes_tracking_and_query_order() {
@@ -337,25 +390,83 @@ mod tests {
             ("https://www.rbb24.de/a/b", "rbb24"),
             ("https://www.wsj.com/a/b", "The Wall Street Journal"),
             ("https://www.handelsblatt.com/a/b", "Handelsblatt"),
+            ("https://www.dw.com/en/story/a-123", "DW"),
+            ("https://m.dw.com/en/story/a-123", "DW"),
         ];
         for (url, expected) in providers {
             assert_eq!(provider_name(url), Some(expected));
         }
         assert_eq!(provider_name("https://example.com/a/b"), None);
+        assert_eq!(provider_domain("https://dw.com.attacker.example/a/b"), None);
+        assert_eq!(provider_name("https://notdw.com/a/b"), None);
     }
 
     #[test]
+    fn exposes_exact_edition_source_profiles() {
+        assert_eq!(
+            MORNING_DOMAINS,
+            ["wsj.com", "nytimes.com", "ft.com", "reuters.com"]
+        );
+        assert_eq!(
+            EVENING_DOMAINS,
+            ["handelsblatt.com", "tagesschau.de", "ft.com", "dw.com"]
+        );
+        assert_eq!(domains_for_edition(&EditionName::Morning), MORNING_DOMAINS);
+        assert_eq!(domains_for_edition(&EditionName::Evening), EVENING_DOMAINS);
+    }
+    #[test]
     fn valid_fixture_satisfies_published_contract()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let fixture = serde_json::from_str::<ResearchEdition>(include_str!(
-            "../fixtures/valid-research.json"
-        ))?;
-        let now = Utc
-            .with_ymd_and_hms(2026, 8, 5, 4, 15, 0)
-            .single()
-            .ok_or_else(|| std::io::Error::other("fixed time must exist"))?;
-        let report = validate_edition(&fixture, now);
+        let report = validate_edition(&fixture()?, now()?);
         assert!(report.is_valid(), "{}", report.problems.join("; "));
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_prior_day_fresh_lead_and_arbitrarily_old_carry()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut research = fixture()?;
+        let lead = research.stories.first_mut().ok_or("fixture has no lead")?;
+        lead.published_at = "2026-08-03T23:00:00Z".parse()?;
+        let carry = research.stories.last_mut().ok_or("fixture has no carry")?;
+        carry.published_at = "2020-01-01T00:00:00Z".parse()?;
+        carry.is_carried = true;
+
+        let report = validate_edition(&research, now()?);
+        assert!(report.is_valid(), "{}", report.problems.join("; "));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_carried_lead_and_future_timestamps()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut carried_lead = fixture()?;
+        carried_lead
+            .stories
+            .first_mut()
+            .ok_or("fixture has no lead")?
+            .is_carried = true;
+        let report = validate_edition(&carried_lead, now()?);
+        assert!(
+            report
+                .problems
+                .iter()
+                .any(|problem| problem == "story 0 must be a fresh, non-carried story")
+        );
+
+        for carried in [false, true] {
+            let mut research = fixture()?;
+            let story = research.stories.get_mut(1).ok_or("fixture has no story")?;
+            story.published_at = now()? + chrono::Duration::minutes(31);
+            story.is_carried = carried;
+            let report = validate_edition(&research, now()?);
+            assert!(
+                report
+                    .problems
+                    .iter()
+                    .any(|problem| problem.contains("publication time is in future"))
+            );
+        }
         Ok(())
     }
 }

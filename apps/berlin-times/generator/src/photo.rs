@@ -526,6 +526,7 @@ mod tests {
                     url: source_url,
                 }],
                 image_url,
+                is_carried: false,
             }],
             photo_candidates: vec!["test-story".into()],
         }

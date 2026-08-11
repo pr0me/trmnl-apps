@@ -108,6 +108,8 @@ begin
       uniqueStories: new Set(Array.from(document.querySelectorAll('[data-story-id]'))
         .map((story) => story.dataset.storyId)).size,
       visibleImages: images.length,
+      caption: document.querySelector('.bt-caption')?.textContent,
+      secondaryHeadline: document.querySelectorAll('.bt-headline')[1]?.textContent,
       photoArea: photo ? photo.width * photo.height / (#{WIDTH} * #{HEIGHT}) : 1,
       pageWidth: pageBox?.width,
       pageHeight: pageBox?.height,
@@ -157,6 +159,9 @@ begin
   failures << "expected six summaries, received #{result['summaries']}" unless result['summaries'] == 6
   failures << "story ids are not unique" unless result['uniqueStories'] == 6
   failures << "expected one visible image, received #{result['visibleImages']}" unless result['visibleImages'] == 1
+  unless result['caption']&.include?(result['secondaryHeadline'].to_s.strip)
+    failures << "caption does not identify photographed secondary story: #{result['caption'].inspect}"
+  end
   if result['photoArea'].to_f > MAX_PHOTO_AREA
     failures << format('photo occupies %.2f%% of screen', result['photoArea'].to_f * 100)
   end

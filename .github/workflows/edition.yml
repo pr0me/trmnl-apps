@@ -2,7 +2,7 @@ name: Publish The Berlin Times edition
 
 on:
   schedule:
-    - cron: "30 6 * * *"
+    - cron: "0 6 * * *"
       timezone: "Europe/Berlin"
     - cron: "0 17 * * *"
       timezone: "Europe/Berlin"

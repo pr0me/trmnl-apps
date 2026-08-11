@@ -1,12 +1,12 @@
 # The Berlin Times
 
-The Berlin Times is a private, landscape-only TRMNL X newspaper front page. It publishes exactly six concise news briefs with English headlines and summaries at 06:30 and 17:00 Europe/Berlin time.
+The Berlin Times is a private, landscape-only TRMNL X newspaper front page. It publishes exactly six concise news briefs with English headlines and summaries at 06:00 and 17:00 Europe/Berlin time.
 
 ```text
 GitHub Actions → Exa Search API → GitHub Pages → TRMNL polling → TRMNL X
 ```
 
-The page is deterministic HTML and Liquid, not an AI-generated image. Exa returns ten current news results with English headlines and summaries per search. The Rust generator independently enforces freshness and URL safety, removes duplicate canonical URLs, selects six stories, fits copy to the layout, processes one source photograph, and publishes a static Pages artifact. TRMNL polls `edition.json` and renders the e-ink screen.
+The page is deterministic HTML and Liquid, not an AI-generated image. Exa returns current news results with English headlines and summaries. The Rust generator independently enforces publication windows and URL safety, removes repeated and duplicate canonical URLs, keeps a fresh story at the lead, carries stories from only the currently deployed edition when needed, fits copy to the layout, processes one source photograph, and atomically publishes a static Pages artifact. TRMNL polls `edition.json` and renders the e-ink screen.
 
 ## Contents
 
@@ -24,7 +24,7 @@ cargo run --bin berlin-times -- generate \
   --public-base-url https://pr0me.github.io/trmnl-apps/ \
   --fixture apps/berlin-times/generator/fixtures/valid-research.json \
   --fixture-image apps/berlin-times/generator/fixtures/lead.ppm \
-  --at 2026-08-05T04:30:00Z
+  --at 2026-08-05T04:15:00Z
 ```
 
 The output contains:
@@ -39,34 +39,44 @@ The writer stages the complete site beside the destination and swaps directories
 
 ## Live generation
 
-Set a project-scoped Exa key in the environment, then omit the fixture flags:
+Read a project-scoped Exa key without placing it in a command, file, or shell history, then omit the fixture flags:
 
 ```sh
-EXA_API_KEY=... cargo run --release --bin berlin-times -- generate \
+umask 077
+IFS= read -r -s EXA_API_KEY
+export EXA_API_KEY
+trap 'unset EXA_API_KEY' EXIT HUP INT TERM
+cargo run --locked --release --bin berlin-times -- generate \
   --output _site \
   --public-base-url https://pr0me.github.io/trmnl-apps/
 ```
 
-`EXA_API_BASE` exists for isolated API tests and defaults to `https://api.exa.ai/`. The CLI never logs request headers, environment contents, the raw key, or raw article text.
+`EXA_API_BASE` exists for isolated API tests and defaults to `https://api.exa.ai/`. The CLI never logs request headers, environment contents, the raw key, summaries, or raw article text.
 
-Each live, deep-reasoning `POST /search` requests ten news results from The New York Times, Financial Times, Tagesschau, Reuters, rbb24, The Wall Street Journal, and Handelsblatt. It asks Exa for at least two international sources and one German or Berlin source, with no duplicate events between agencies, and forces a live crawl with `maxAgeHours: 0`. Its publication filters span the current Europe/Berlin calendar day with DST-correct UTC boundaries. Exa summaries and filters are advisory: the generator checks every result locally. If fewer than six results survive those checks, the generator repeats the same uncached search once, combines both responses, and deduplicates canonical URLs before selection. Connection failures, timeouts, `429`, and `5xx` responses are retried up to three total attempts with bounded backoff and `Retry-After` support. Other API errors fail immediately and report Exa's request ID and error tag when available.
+Morning searches use `wsj.com`, `nytimes.com`, `ft.com`, and `reuters.com` with the international query. Evening searches use `handelsblatt.com`, `tagesschau.de`, `ft.com`, and `dw.com` with the German and European query. Both request consequential current reporting from up to three distinct allowed sources, avoid duplicate events, and force a live crawl with `maxAgeHours: 0`.
 
-The generator logs the request ID, returned/usable/selected counts, provider and category coverage, and Exa's reported request cost.
+The morning primary window begins at the preceding Berlin date's nominal 17:00 boundary. A deployed evening edition's actual generation time replaces that boundary only when it belongs to the expected preceding evening and precedes the new run. The evening primary window begins at current Berlin midnight. Both end at the run time plus 30 minutes. A final fallback can query the adjacent half-open interval from the preceding Berlin midnight to the primary start.
+
+When the initial result set cannot supply six novel usable stories, one primary-window retry rotates away from sources associated with previously displayed URLs, or otherwise from the most represented source. Every request keeps at least two allowed domains. A prior-day request runs only when no novel lead exists or novel stories plus valid carry candidates still cannot fill six slots. Transport retries remain separate: connection failures, timeouts, `429`, and `5xx` responses retry the identical body up to three total attempts with bounded backoff and `Retry-After` support.
+
+Each attempt logs credential-free structured fields for edition, attempt, window kind and bounds, domains, returned/usable/novel counts, rejection counts, request ID, and cost. Final selection logs novel and carried counts, provider and category coverage, and `lead_fresh=true`.
 
 ## Editorial contract
 
 The generator rejects an edition unless it has:
 
-- exactly six stories;
-- publication timestamps within the current Berlin calendar day and no more than 30 minutes in the future;
-- canonical, credential-free HTTPS article URLs from the seven configured publications;
-- no duplicate canonical URLs;
+- exactly six unique stories and canonical source URLs;
+- at least one novel usable story, kept at index 0 as the non-carried textual lead;
+- non-carried timestamps within the primary or explicit prior-day windows and no timestamp more than 30 minutes in the future;
+- credential-free HTTPS article URLs from the globally recognized provider union, with live results restricted to the active morning or evening profile;
 - English headlines, including translations requested from Exa for German titles;
-- summaries fitted after photo-led story promotion to at most 36 lead words and 30 supporting words;
-- exactly one mapped publication source per story;
+- summaries fitted without story reordering to at most 36 lead words and 30 supporting words;
+- exactly one correctly mapped publication source per story;
 - all six stories ranked exactly once for photographic suitability.
 
-Germany, technology, global economics, and global politics coverage; provider diversity; an Exa image; and URLs absent from the prior edition are deterministic best-effort selection preferences, not publication blockers. Research pages are untrusted input. The photo fetcher tries valid Exa image URLs first and falls back to each article's Open Graph image. It permits HTTPS on port 443 only, rejects credentials and private/reserved addresses, checks every redirect, caps redirect count, download time and bytes, validates image dimensions before decoding, crops to the template's fixed 560:367 aspect ratio, converts to grayscale, and writes a compressed JPEG. The first story whose image completes that pipeline is promoted to the lead position. If no selected story yields a usable image, no edition is published. When the preceding edition and its lead JPEG remain available, the next Pages artifact carries that validated image forward so a client holding cached JSON does not receive a `404` during deployment.
+Novel stories always precede and displace carried stories. When at least one novel story survives, any remaining slots are filled in published order from the single currently deployed `edition.json`; there is no archive or second history source and carried stories have no age limit. If no novel lead survives the primary, rotated, and prior-day searches, or novel plus valid carry content cannot total six, the deployed edition remains untouched.
+
+Category and provider diversity and direct Exa images are deterministic best-effort selection preferences, not publication blockers. Primary-window candidates outrank prior-day candidates before those preferences. Research pages are untrusted input. The photo fetcher tries valid Exa image URLs first and then each article's Open Graph image. It permits HTTPS on port 443 only, rejects credentials and private/reserved addresses, checks every redirect, caps redirect count, download time and bytes, validates image dimensions before decoding, crops to the template's fixed 560:367 aspect ratio, converts to grayscale, and writes a compressed JPEG. Photo selection never reorders the fresh textual lead; `lead_image.story_id` and its caption may identify another selected story. If no new image is usable, the preceding JPEG is reused only when its photographed story remains among the final six; otherwise no edition is published.
 
 ## Plugin preview
 

@@ -31,6 +31,8 @@ pub struct ResearchStory {
     pub sources: Vec<ResearchSource>,
     #[serde(default, skip_serializing)]
     pub image_url: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub is_carried: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -112,5 +114,28 @@ impl From<&ResearchStory> for StoryV1 {
                 })
                 .collect(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ResearchEdition, StoryV1};
+
+    #[test]
+    fn carry_provenance_is_internal_only() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let research = serde_json::from_str::<ResearchEdition>(include_str!(
+            "../fixtures/valid-research.json"
+        ))?;
+        assert!(research.stories.iter().all(|story| !story.is_carried));
+        let serialized_research = serde_json::to_string(&research)?;
+        assert!(!serialized_research.contains("is_carried"));
+
+        let published = research
+            .stories
+            .first()
+            .map(StoryV1::from)
+            .ok_or("fixture has no stories")?;
+        assert!(!serde_json::to_string(&published)?.contains("is_carried"));
+        Ok(())
     }
 }

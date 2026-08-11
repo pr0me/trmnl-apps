@@ -10,19 +10,24 @@ use reqwest::{StatusCode, header::RETRY_AFTER};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::time::sleep;
-use tracing::{info, warn};
+use tracing::info;
 use url::Url;
 
 use crate::{
     error::{GeneratorError, Result},
-    model::{Category, EditionV1, ResearchEdition, ResearchSource, ResearchStory},
-    schedule::berlin_day,
-    validate::{article_url_allowed, canonicalize_url, provider_name},
+    model::{
+        Category, EditionName, EditionV1, ResearchEdition, ResearchSource, ResearchStory, StoryV1,
+    },
+    schedule::{PublicationWindow, edition_name, prior_day_window, publication_window},
+    validate::{
+        article_url_allowed, canonicalize_url, domains_for_edition, provider_domain, provider_name,
+    },
 };
 
 const MAX_ATTEMPTS: usize = 3;
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const REQUIRED_STORIES: usize = 6;
+const MAX_SELECTION_CANDIDATES: usize = 18;
 const GERMANY_TERMS: &[&str] = &[
     "berlin",
     "germany",
@@ -123,18 +128,34 @@ const SCIENCE_TERMS: &[&str] = &[
     "studie",
 ];
 
-pub const SEARCH_QUERY: &str = "Today’s most important news in global politics OR global economics OR Berlin and Germany OR consequential technology";
-pub const SYSTEM_PROMPT: &str = "Provide results from at least 3 sources (2 international and 1 German/Berlin one). Make sure to not emit news items that are duplicates between agencies.\nPrefer current reporting over analysis or opinion";
+const MORNING_QUERY: &str = "Most important international news in global politics OR global economics OR security OR consequential technology";
+const EVENING_QUERY: &str = "Today’s most important German and European news in politics OR economics OR security OR consequential technology";
 pub const SUMMARY_PROMPT: &str = "As your first line, output `Title: {english_title}\\n`, providing translations for German titles.\nSummarize the news article in 2 short English sentences / 30-45 words. Make the first sentence self-contained and no longer than 30 words.\nDeliver the gist. Write the summary as it would appear in a newspaper itself; do not use \"Summary:\", \"The article explains\" or alike.";
-pub const DOMAINS: &[&str] = &[
-    "nytimes.com",
-    "ft.com",
-    "tagesschau.de",
-    "reuters.com",
-    "rbb24.de",
-    "wsj.com",
-    "handelsblatt.com",
-];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EditionProfile {
+    query: &'static str,
+    domains: &'static [&'static str],
+}
+
+fn edition_profile(edition: &EditionName) -> EditionProfile {
+    EditionProfile {
+        query: match edition {
+            EditionName::Morning => MORNING_QUERY,
+            EditionName::Evening => EVENING_QUERY,
+        },
+        domains: domains_for_edition(edition),
+    }
+}
+
+struct SemanticAttempt<'a> {
+    edition: &'a EditionName,
+    number: usize,
+    window_kind: &'static str,
+    window: PublicationWindow,
+    domains: &'a [&'static str],
+    primary_window: bool,
+}
 
 #[derive(Clone)]
 pub struct ExaClient {
@@ -149,8 +170,6 @@ pub struct ExaResponse {
     #[serde(default)]
     pub request_id: Option<String>,
     #[serde(default)]
-    pub search_type: Option<String>,
-    #[serde(default)]
     pub cost_dollars: Option<CostDollars>,
     #[serde(default)]
     pub results: Vec<ExaResult>,
@@ -162,7 +181,7 @@ pub struct CostDollars {
     pub total: Option<f64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExaResult {
     #[serde(default)]
@@ -184,8 +203,8 @@ struct SearchRequest<'a> {
     #[serde(rename = "type")]
     search_type: &'a str,
     num_results: usize,
-    include_domains: &'a [&'a str],
-    system_prompt: &'a str,
+    include_domains: &'a [&'static str],
+    system_prompt: String,
     start_published_date: String,
     end_published_date: String,
     output_schema: OutputSchema<'a>,
@@ -213,7 +232,8 @@ struct OutputSchema<'a> {
 
 #[derive(Debug)]
 struct Candidate {
-    rank: usize,
+    rank: (usize, usize),
+    primary_window: bool,
     canonical_url: String,
     provider: &'static str,
     title: String,
@@ -223,13 +243,29 @@ struct Candidate {
     categories: Vec<Category>,
 }
 
+#[derive(Debug, Default, Eq, PartialEq)]
+struct RejectionCounters {
+    missing_or_invalid_copy: usize,
+    missing_or_invalid_date: usize,
+    outside_request_window: usize,
+    disallowed_or_non_article_url: usize,
+    duplicate_canonical_url: usize,
+    repeated_previous_edition_url: usize,
+}
+
+#[derive(Debug)]
+struct Normalization {
+    candidates: Vec<Candidate>,
+    rejections: RejectionCounters,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct SelectionScore {
+    primary_window: usize,
     required_categories: usize,
     providers: usize,
     has_image: bool,
-    novel_urls: usize,
-    ranks: Vec<usize>,
+    ranks: Vec<(usize, usize)>,
 }
 
 impl ExaClient {
@@ -250,36 +286,122 @@ impl ExaClient {
         })
     }
 
-    pub async fn search(&self, now: DateTime<Utc>) -> Result<ExaResponse> {
-        let body = search_request(now)?;
-        self.send_with_retry(&body).await
-    }
+    pub async fn research(
+        &self,
+        now: DateTime<Utc>,
+        previous: Option<&EditionV1>,
+    ) -> Result<ResearchEdition> {
+        let edition_name = edition_name(now);
+        let profile = edition_profile(&edition_name);
+        let previous_evening_at = previous
+            .filter(|value| value.edition_name == EditionName::Evening)
+            .map(|value| value.generated_at);
+        let window = publication_window(now, previous_evening_at)?;
+        let previous_urls = previous_urls(previous);
 
-    pub async fn search_with_fallback(&self, now: DateTime<Utc>) -> Result<ExaResponse> {
-        let mut response = self.search(now).await?;
-        let usable = normalize(&response.results, now)?.len();
-        if usable >= REQUIRED_STORIES {
-            return Ok(response);
+        let (initial, initial_normalization) = self
+            .semantic_search(
+                profile,
+                SemanticAttempt {
+                    edition: &edition_name,
+                    number: 1,
+                    window_kind: "primary",
+                    window,
+                    domains: profile.domains,
+                    primary_window: true,
+                },
+                &previous_urls,
+            )
+            .await?;
+        let mut candidates = initial_normalization.candidates;
+        let mut responses = vec![initial];
+        let mut current_domains = profile.domains.to_vec();
+
+        if candidates.len() < REQUIRED_STORIES {
+            current_domains = retry_domains(
+                profile.domains,
+                profile.domains,
+                &responses[0].results,
+                &previous_urls,
+            );
+            let (retry, retry_normalization) = self
+                .semantic_search(
+                    profile,
+                    SemanticAttempt {
+                        edition: &edition_name,
+                        number: 2,
+                        window_kind: "primary",
+                        window,
+                        domains: &current_domains,
+                        primary_window: true,
+                    },
+                    &previous_urls,
+                )
+                .await?;
+            merge_candidates(&mut candidates, retry_normalization.candidates);
+            responses.push(retry);
         }
 
-        let initial_request_id = response.request_id.as_deref().unwrap_or("unavailable");
-        warn!(
-            request_id = initial_request_id,
-            usable, "Exa search returned too few usable stories; running fallback"
+        let valid_carry_count = carry_candidates(previous, now, &candidates).len();
+        if candidates.is_empty() || candidates.len() + valid_carry_count < REQUIRED_STORIES {
+            let combined_results = responses
+                .iter()
+                .flat_map(|response| response.results.iter().cloned())
+                .collect::<Vec<_>>();
+            let prior_domains = retry_domains(
+                profile.domains,
+                &current_domains,
+                &combined_results,
+                &previous_urls,
+            );
+            let prior_window = prior_day_window(window)?;
+            let (prior, prior_normalization) = self
+                .semantic_search(
+                    profile,
+                    SemanticAttempt {
+                        edition: &edition_name,
+                        number: 3,
+                        window_kind: "prior_day",
+                        window: prior_window,
+                        domains: &prior_domains,
+                        primary_window: false,
+                    },
+                    &previous_urls,
+                )
+                .await?;
+            merge_candidates(&mut candidates, prior_normalization.candidates);
+            responses.push(prior);
+        }
+
+        finalize_research(candidates, previous, now, &responses)
+    }
+
+    async fn semantic_search(
+        &self,
+        profile: EditionProfile,
+        attempt: SemanticAttempt<'_>,
+        previous_urls: &HashSet<String>,
+    ) -> Result<(ExaResponse, Normalization)> {
+        let body = search_request(profile, attempt.window, attempt.domains);
+        let response = self.send_with_retry(&body).await?;
+        let normalization = normalize(
+            &response.results,
+            attempt.window,
+            attempt.domains,
+            previous_urls,
+            attempt.number.saturating_sub(1),
+            attempt.primary_window,
         );
-        let fallback = self.search(now).await?;
-        let fallback_request_id = fallback.request_id.as_deref().unwrap_or("unavailable");
-        let fallback_returned = fallback.results.len();
-        response.cost_dollars = combined_cost(response.cost_dollars, fallback.cost_dollars);
-        response.results.extend(fallback.results);
-        info!(
-            initial_request_id,
-            fallback_request_id,
-            fallback_returned,
-            combined_returned = response.results.len(),
-            "Exa fallback search completed"
+        log_search_attempt(
+            attempt.edition,
+            attempt.number,
+            attempt.window_kind,
+            attempt.window,
+            attempt.domains,
+            &response,
+            &normalization,
         );
-        Ok(response)
+        Ok((response, normalization))
     }
 
     async fn send_with_retry(&self, body: &SearchRequest<'_>) -> Result<ExaResponse> {
@@ -321,20 +443,60 @@ impl ExaClient {
     }
 }
 
-fn search_request(now: DateTime<Utc>) -> Result<SearchRequest<'static>> {
-    let day = berlin_day(now)?;
-    Ok(SearchRequest {
-        query: SEARCH_QUERY,
+fn finalize_research(
+    mut candidates: Vec<Candidate>,
+    previous: Option<&EditionV1>,
+    now: DateTime<Utc>,
+    responses: &[ExaResponse],
+) -> Result<ResearchEdition> {
+    if candidates.is_empty() {
+        return Err(GeneratorError::Validation(
+            "exa returned no novel usable stories after the prior-day fallback; refusing to publish without a fresh lead"
+                .into(),
+        ));
+    }
+    order_and_limit_candidates(&mut candidates);
+    let selected = select(&candidates)
+        .ok_or_else(|| GeneratorError::Validation("could not select exa stories".into()))?;
+    let mut stories = build_stories(selected);
+    let carried = carry_candidates(previous, now, &candidates);
+    let selected_novel = stories.len();
+    let carried_count = carried.len();
+    if selected_novel + carried_count < REQUIRED_STORIES {
+        return Err(GeneratorError::Validation(format!(
+            "only {selected_novel} novel and {carried_count} carried stories were usable; six are required"
+        )));
+    }
+    let selected_carried = REQUIRED_STORIES.saturating_sub(selected_novel);
+    stories.extend(carried.into_iter().take(selected_carried));
+    let research = ResearchEdition {
+        photo_candidates: photo_candidates(&stories),
+        stories,
+    };
+    log_selection(&research, responses, selected_novel, selected_carried);
+    Ok(research)
+}
+
+fn search_request<'a>(
+    profile: EditionProfile,
+    window: PublicationWindow,
+    include_domains: &'a [&'static str],
+) -> SearchRequest<'a> {
+    let requested_sources = 3.min(include_domains.len());
+    SearchRequest {
+        query: profile.query,
         category: "news",
         search_type: "deep-reasoning",
         num_results: 10,
-        include_domains: DOMAINS,
-        system_prompt: SYSTEM_PROMPT,
-        start_published_date: day.start.to_rfc3339_opts(SecondsFormat::Millis, true),
-        end_published_date: day
+        include_domains,
+        system_prompt: format!(
+            "Provide results from at least {requested_sources} distinct allowed sources. Avoid duplicate events between sources.\nPrefer consequential current reporting over analysis or opinion"
+        ),
+        start_published_date: window.start.to_rfc3339_opts(SecondsFormat::Millis, true),
+        end_published_date: window
             .end
             .checked_sub_signed(chrono::Duration::milliseconds(1))
-            .unwrap_or(day.end)
+            .unwrap_or(window.end)
             .to_rfc3339_opts(SecondsFormat::Millis, true),
         output_schema: OutputSchema {
             schema_type: "object",
@@ -346,69 +508,24 @@ fn search_request(now: DateTime<Utc>) -> Result<SearchRequest<'static>> {
             },
             max_age_hours: 0,
         },
-    })
-}
-
-pub fn normalize_and_select(
-    response: &ExaResponse,
-    now: DateTime<Utc>,
-    previous: Option<&EditionV1>,
-) -> Result<ResearchEdition> {
-    let returned = response.results.len();
-    let request_id = response.request_id.as_deref().unwrap_or("unavailable");
-    let search_type = response.search_type.as_deref().unwrap_or("unavailable");
-    let cost = response.cost_dollars.as_ref().and_then(|value| value.total);
-    let candidates = normalize(&response.results, now)?;
-    let usable = candidates.len();
-    if usable < REQUIRED_STORIES {
-        return Err(GeneratorError::Validation(format!(
-            "exa returned only {usable} fresh, safe stories; six are required"
-        )));
     }
-    let previous_urls = previous_urls(previous);
-    let selected = select(&candidates, &previous_urls)
-        .ok_or_else(|| GeneratorError::Validation("could not select six exa stories".into()))?;
-    let edition = build_edition(selected);
-    let mut providers = edition
-        .stories
-        .iter()
-        .filter_map(|story| story.sources.first().map(|source| source.name.as_str()))
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    providers.sort_unstable();
-    let mut categories = edition
-        .stories
-        .iter()
-        .map(|story| format!("{:?}", story.primary_category))
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    categories.sort_unstable();
-    info!(
-        request_id,
-        search_type,
-        returned,
-        usable,
-        selected = edition.stories.len(),
-        provider_coverage = %providers.join(","),
-        category_coverage = %categories.join(","),
-        cost_dollars = cost,
-        "Exa search normalized"
-    );
-    Ok(edition)
 }
 
-fn normalize(results: &[ExaResult], now: DateTime<Utc>) -> Result<Vec<Candidate>> {
-    let day = berlin_day(now)?;
-    let latest = now
-        .checked_add_signed(chrono::Duration::minutes(30))
-        .unwrap_or(now);
+fn normalize(
+    results: &[ExaResult],
+    window: PublicationWindow,
+    include_domains: &[&'static str],
+    previous_urls: &HashSet<String>,
+    attempt_index: usize,
+    primary_window: bool,
+) -> Normalization {
     let mut urls = HashSet::new();
     let mut candidates = Vec::<Candidate>::new();
+    let mut rejections = RejectionCounters::default();
 
     for (rank, result) in results.iter().enumerate() {
         let Some(raw_summary) = result.summary.as_deref() else {
+            rejections.missing_or_invalid_copy += 1;
             continue;
         };
         let (title, summary) = title_and_summary(&result.title, raw_summary);
@@ -419,6 +536,7 @@ fn normalize(results: &[ExaResult], now: DateTime<Utc>) -> Result<Vec<Candidate>
             || summary.contains('<')
             || summary.contains('>')
         {
+            rejections.missing_or_invalid_copy += 1;
             continue;
         }
         let Some(published_at) = result
@@ -427,19 +545,39 @@ fn normalize(results: &[ExaResult], now: DateTime<Utc>) -> Result<Vec<Candidate>
             .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
             .map(|value| value.with_timezone(&Utc))
         else {
+            rejections.missing_or_invalid_date += 1;
             continue;
         };
-        if published_at < day.start || published_at >= day.end || published_at > latest {
+        if published_at < window.start || published_at >= window.end {
+            rejections.outside_request_window += 1;
             continue;
         }
         if !article_url_allowed(&result.url) {
+            rejections.disallowed_or_non_article_url += 1;
             continue;
         }
-        let canonical_url = match canonicalize_url(&result.url) {
-            Ok(value) if urls.insert(value.clone()) => value,
-            Ok(_) | Err(_) => continue,
+        let Ok(canonical_url) = canonicalize_url(&result.url) else {
+            rejections.disallowed_or_non_article_url += 1;
+            continue;
         };
+        let Some(domain) = provider_domain(&canonical_url) else {
+            rejections.disallowed_or_non_article_url += 1;
+            continue;
+        };
+        if !include_domains.contains(&domain) {
+            rejections.disallowed_or_non_article_url += 1;
+            continue;
+        }
+        if previous_urls.contains(&canonical_url) {
+            rejections.repeated_previous_edition_url += 1;
+            continue;
+        }
+        if !urls.insert(canonical_url.clone()) {
+            rejections.duplicate_canonical_url += 1;
+            continue;
+        }
         let Some(provider) = provider_name(&canonical_url) else {
+            rejections.disallowed_or_non_article_url += 1;
             continue;
         };
         let categories = classify(&canonical_url, &title, &summary, provider);
@@ -449,7 +587,8 @@ fn normalize(results: &[ExaResult], now: DateTime<Utc>) -> Result<Vec<Candidate>
             .filter(|value| safe_image_url(value))
             .cloned();
         candidates.push(Candidate {
-            rank,
+            rank: (attempt_index, rank),
+            primary_window,
             canonical_url,
             provider,
             title,
@@ -459,44 +598,194 @@ fn normalize(results: &[ExaResult], now: DateTime<Utc>) -> Result<Vec<Candidate>
             categories,
         });
     }
-    Ok(candidates)
-}
-
-fn combined_cost(
-    initial: Option<CostDollars>,
-    fallback: Option<CostDollars>,
-) -> Option<CostDollars> {
-    match (
-        initial.and_then(|cost| cost.total),
-        fallback.and_then(|cost| cost.total),
-    ) {
-        (Some(initial), Some(fallback)) => Some(CostDollars {
-            total: Some(initial + fallback),
-        }),
-        (Some(total), None) | (None, Some(total)) => Some(CostDollars { total: Some(total) }),
-        (None, None) => None,
+    Normalization {
+        candidates,
+        rejections,
     }
 }
 
-fn select<'a>(
-    candidates: &'a [Candidate],
+fn merge_candidates(candidates: &mut Vec<Candidate>, additional: Vec<Candidate>) {
+    let mut urls = candidates
+        .iter()
+        .map(|candidate| candidate.canonical_url.clone())
+        .collect::<HashSet<_>>();
+    candidates.extend(
+        additional
+            .into_iter()
+            .filter(|candidate| urls.insert(candidate.canonical_url.clone())),
+    );
+}
+
+fn order_and_limit_candidates(candidates: &mut Vec<Candidate>) {
+    candidates.sort_by_key(|candidate| (!candidate.primary_window, candidate.rank));
+    candidates.truncate(MAX_SELECTION_CANDIDATES);
+}
+
+fn retry_domains(
+    profile_domains: &[&'static str],
+    current_domains: &[&'static str],
+    results: &[ExaResult],
     previous_urls: &HashSet<String>,
-) -> Option<Vec<&'a Candidate>> {
+) -> Vec<&'static str> {
+    if current_domains.len() <= 2 {
+        return current_domains.to_vec();
+    }
+
+    let mut counts = profile_domains
+        .iter()
+        .map(|domain| (*domain, 0_usize))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut stale_domains = HashSet::new();
+    for result in results {
+        let Some(domain) =
+            provider_domain(&result.url).filter(|domain| counts.contains_key(domain))
+        else {
+            continue;
+        };
+        if let Some(count) = counts.get_mut(domain) {
+            *count += 1;
+        }
+        if canonicalize_url(&result.url).is_ok_and(|url| previous_urls.contains(&url)) {
+            stale_domains.insert(domain);
+        }
+    }
+
+    let profile_index = |domain: &str| {
+        profile_domains
+            .iter()
+            .position(|candidate| *candidate == domain)
+            .unwrap_or(profile_domains.len())
+    };
+    let mut remaining = current_domains.to_vec();
+    let mut stale = remaining
+        .iter()
+        .copied()
+        .filter(|domain| stale_domains.contains(domain))
+        .collect::<Vec<_>>();
+    stale.sort_by(|left, right| {
+        counts
+            .get(right)
+            .copied()
+            .unwrap_or_default()
+            .cmp(&counts.get(left).copied().unwrap_or_default())
+            .then_with(|| profile_index(left).cmp(&profile_index(right)))
+    });
+    for domain in stale {
+        if remaining.len() == 2 {
+            break;
+        }
+        remaining.retain(|candidate| *candidate != domain);
+    }
+
+    if remaining.len() == current_domains.len() {
+        let remove = remaining.iter().copied().max_by(|left, right| {
+            counts
+                .get(left)
+                .copied()
+                .unwrap_or_default()
+                .cmp(&counts.get(right).copied().unwrap_or_default())
+                .then_with(|| profile_index(right).cmp(&profile_index(left)))
+        });
+        if let Some(remove) = remove {
+            remaining.retain(|candidate| *candidate != remove);
+        }
+    }
+
+    remaining
+}
+
+fn log_search_attempt(
+    edition: &EditionName,
+    attempt: usize,
+    window_kind: &str,
+    window: PublicationWindow,
+    domains: &[&str],
+    response: &ExaResponse,
+    normalization: &Normalization,
+) {
+    let rejections = &normalization.rejections;
+    info!(
+        edition = edition.as_str(),
+        attempt,
+        window_kind,
+        window_start = %window.start.to_rfc3339_opts(SecondsFormat::Millis, true),
+        window_end = %window.end.to_rfc3339_opts(SecondsFormat::Millis, true),
+        domains = %domains.join(","),
+        returned = response.results.len(),
+        usable = normalization.candidates.len(),
+        novel = normalization.candidates.len(),
+        missing_or_invalid_copy = rejections.missing_or_invalid_copy,
+        missing_or_invalid_date = rejections.missing_or_invalid_date,
+        outside_request_window = rejections.outside_request_window,
+        disallowed_or_non_article_url = rejections.disallowed_or_non_article_url,
+        duplicate_canonical_url = rejections.duplicate_canonical_url,
+        repeated_previous_edition_url = rejections.repeated_previous_edition_url,
+        request_id = response.request_id.as_deref().unwrap_or("unavailable"),
+        cost_dollars = ?response.cost_dollars.as_ref().and_then(|cost| cost.total),
+        "Exa search attempt normalized"
+    );
+}
+
+fn log_selection(
+    research: &ResearchEdition,
+    responses: &[ExaResponse],
+    selected_novel: usize,
+    selected_carried: usize,
+) {
+    let mut providers = research
+        .stories
+        .iter()
+        .filter_map(|story| story.sources.first().map(|source| source.name.as_str()))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    providers.sort_unstable();
+    let mut categories = research
+        .stories
+        .iter()
+        .map(|story| format!("{:?}", story.primary_category))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    categories.sort_unstable();
+    let request_ids = responses
+        .iter()
+        .filter_map(|response| response.request_id.as_deref())
+        .collect::<Vec<_>>()
+        .join(",");
+    let cost = responses
+        .iter()
+        .filter_map(|response| response.cost_dollars.as_ref()?.total)
+        .sum::<f64>();
+    info!(
+        request_ids,
+        selected_novel,
+        selected_carried,
+        provider_coverage = %providers.join(","),
+        category_coverage = %categories.join(","),
+        cost_dollars = cost,
+        lead_fresh = true,
+        "Exa stories selected"
+    );
+}
+
+fn select(candidates: &[Candidate]) -> Option<Vec<&Candidate>> {
+    let target = REQUIRED_STORIES.min(candidates.len());
     let mut best = None::<(SelectionScore, Vec<&Candidate>)>;
-    let mut current = Vec::with_capacity(REQUIRED_STORIES);
-    enumerate_subsets(candidates, previous_urls, 0, &mut current, &mut best);
+    let mut current = Vec::with_capacity(target);
+    enumerate_subsets(candidates, target, 0, &mut current, &mut best);
     best.map(|(_, candidates)| candidates)
 }
 
 fn enumerate_subsets<'a>(
     candidates: &'a [Candidate],
-    previous_urls: &HashSet<String>,
+    target: usize,
     start: usize,
     current: &mut Vec<&'a Candidate>,
     best: &mut Option<(SelectionScore, Vec<&'a Candidate>)>,
 ) {
-    if current.len() == REQUIRED_STORIES {
-        let score = selection_score(current, previous_urls);
+    if current.len() == target {
+        let score = selection_score(current);
         if best
             .as_ref()
             .is_none_or(|(best_score, _)| score.better_than(best_score))
@@ -505,18 +794,18 @@ fn enumerate_subsets<'a>(
         }
         return;
     }
-    let needed = REQUIRED_STORIES.saturating_sub(current.len());
+    let needed = target.saturating_sub(current.len());
     if candidates.len().saturating_sub(start) < needed {
         return;
     }
     (start..candidates.len()).for_each(|index| {
         current.push(&candidates[index]);
-        enumerate_subsets(candidates, previous_urls, index + 1, current, best);
+        enumerate_subsets(candidates, target, index + 1, current, best);
         let _removed = current.pop();
     });
 }
 
-fn selection_score(candidates: &[&Candidate], previous_urls: &HashSet<String>) -> SelectionScore {
+fn selection_score(candidates: &[&Candidate]) -> SelectionScore {
     let required_categories = [
         Category::Germany,
         Category::Technology,
@@ -537,33 +826,33 @@ fn selection_score(candidates: &[&Candidate], previous_urls: &HashSet<String>) -
         .len()
         .min(3);
     SelectionScore {
+        primary_window: candidates
+            .iter()
+            .filter(|candidate| candidate.primary_window)
+            .count(),
         required_categories,
         providers,
         has_image: candidates
             .iter()
             .any(|candidate| candidate.image_url.is_some()),
-        novel_urls: candidates
-            .iter()
-            .filter(|candidate| !previous_urls.contains(&candidate.canonical_url))
-            .count(),
         ranks: candidates.iter().map(|candidate| candidate.rank).collect(),
     }
 }
 
 impl SelectionScore {
     fn better_than(&self, other: &Self) -> bool {
-        self.required_categories
-            .cmp(&other.required_categories)
+        self.primary_window
+            .cmp(&other.primary_window)
+            .then_with(|| self.required_categories.cmp(&other.required_categories))
             .then_with(|| self.providers.cmp(&other.providers))
             .then_with(|| self.has_image.cmp(&other.has_image))
-            .then_with(|| self.novel_urls.cmp(&other.novel_urls))
             .then_with(|| other.ranks.cmp(&self.ranks))
             == Ordering::Greater
     }
 }
 
-fn build_edition(selected: Vec<&Candidate>) -> ResearchEdition {
-    let stories = selected
+fn build_stories(selected: Vec<&Candidate>) -> Vec<ResearchStory> {
+    selected
         .into_iter()
         .map(|candidate| ResearchStory {
             id: story_id(&candidate.title, &candidate.canonical_url),
@@ -581,18 +870,18 @@ fn build_edition(selected: Vec<&Candidate>) -> ResearchEdition {
                 url: candidate.canonical_url.clone(),
             }],
             image_url: candidate.image_url.clone(),
+            is_carried: false,
         })
-        .collect::<Vec<_>>();
-    let photo_candidates = stories
+        .collect()
+}
+
+fn photo_candidates(stories: &[ResearchStory]) -> Vec<String> {
+    stories
         .iter()
         .filter(|story| story.image_url.is_some())
         .chain(stories.iter().filter(|story| story.image_url.is_none()))
         .map(|story| story.id.clone())
-        .collect();
-    ResearchEdition {
-        stories,
-        photo_candidates,
-    }
+        .collect()
 }
 
 fn previous_urls(previous: Option<&EditionV1>) -> HashSet<String> {
@@ -602,6 +891,82 @@ fn previous_urls(previous: Option<&EditionV1>) -> HashSet<String> {
         .flat_map(|story| &story.sources)
         .filter_map(|source| canonicalize_url(&source.url).ok())
         .collect()
+}
+
+fn carried_story(story: &StoryV1, now: DateTime<Utc>) -> Option<ResearchStory> {
+    if !plain_text_present(&story.id)
+        || !plain_text_present(&story.headline)
+        || !plain_text_present(&story.summary)
+    {
+        return None;
+    }
+    let [source] = story.sources.as_slice() else {
+        return None;
+    };
+    if !article_url_allowed(&source.url) || provider_name(&source.url)? != source.name {
+        return None;
+    }
+    let latest = now
+        .checked_add_signed(chrono::Duration::minutes(30))
+        .unwrap_or(now);
+    if story.published_at > latest {
+        return None;
+    }
+
+    Some(ResearchStory {
+        id: story.id.clone(),
+        primary_category: story.primary_category.clone(),
+        is_developing: story.is_developing,
+        headline: story.headline.clone(),
+        summary: story.summary.clone(),
+        published_at: story.published_at,
+        sources: vec![ResearchSource {
+            name: source.name.clone(),
+            url: source.url.clone(),
+        }],
+        image_url: None,
+        is_carried: true,
+    })
+}
+
+fn carry_candidates(
+    previous: Option<&EditionV1>,
+    now: DateTime<Utc>,
+    candidates: &[Candidate],
+) -> Vec<ResearchStory> {
+    let mut urls = candidates
+        .iter()
+        .map(|candidate| candidate.canonical_url.clone())
+        .collect::<HashSet<_>>();
+    let mut ids = candidates
+        .iter()
+        .map(|candidate| story_id(&candidate.title, &candidate.canonical_url))
+        .collect::<HashSet<_>>();
+    let mut carried = Vec::new();
+
+    for story in previous.into_iter().flat_map(|edition| &edition.stories) {
+        let Some(candidate) = carried_story(story, now) else {
+            continue;
+        };
+        let Some(url) = candidate
+            .sources
+            .first()
+            .and_then(|source| canonicalize_url(&source.url).ok())
+        else {
+            continue;
+        };
+        if urls.contains(&url) || ids.contains(&candidate.id) {
+            continue;
+        }
+        urls.insert(url);
+        ids.insert(candidate.id.clone());
+        carried.push(candidate);
+    }
+    carried
+}
+
+fn plain_text_present(value: &str) -> bool {
+    !value.trim().is_empty() && !value.contains(['<', '>'])
 }
 
 fn classify(url: &str, title: &str, summary: &str, provider: &str) -> Vec<Category> {
@@ -809,6 +1174,8 @@ fn parse_error_response(status: StatusCode, body: Option<&str>) -> GeneratorErro
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use chrono::{TimeZone, Utc};
     use serde_json::json;
     use url::Url;
@@ -818,11 +1185,13 @@ mod tests {
     };
 
     use super::{
-        DOMAINS, ExaClient, ExaResponse, SEARCH_QUERY, SUMMARY_PROMPT, SYSTEM_PROMPT, classify,
-        fit_summary, normalize, normalize_and_select, parse_error_response, search_request,
+        EVENING_QUERY, ExaClient, ExaResponse, ExaResult, MORNING_QUERY, SUMMARY_PROMPT,
+        build_stories, carried_story, carry_candidates, classify, edition_profile, fit_summary,
+        merge_candidates, normalize, order_and_limit_candidates, parse_error_response,
+        photo_candidates, retry_domains, search_request, select,
     };
-    use crate::model::Category;
-    use crate::schedule::berlin_day;
+    use crate::model::{Category, EditionName, EditionV1, LeadImageV1, ResearchEdition, StoryV1};
+    use crate::schedule::{berlin_day, prior_day_window, publication_window};
 
     fn now() -> std::result::Result<chrono::DateTime<Utc>, Box<dyn std::error::Error>> {
         Utc.with_ymd_and_hms(2026, 8, 5, 10, 0, 0)
@@ -834,22 +1203,140 @@ mod tests {
         serde_json::from_str(include_str!("../fixtures/exa-response.json"))
     }
 
+    fn previous_edition(
+        story_count: usize,
+    ) -> std::result::Result<EditionV1, Box<dyn std::error::Error>> {
+        let research = serde_json::from_str::<ResearchEdition>(include_str!(
+            "../fixtures/valid-research.json"
+        ))?;
+        let stories = research
+            .stories
+            .iter()
+            .take(story_count)
+            .map(StoryV1::from)
+            .collect::<Vec<_>>();
+        let story_id = stories
+            .first()
+            .map_or_else(|| "unused-photo-story".into(), |story| story.id.clone());
+        Ok(EditionV1 {
+            schema_version: 1,
+            edition_id: "previous-evening".into(),
+            edition_name: EditionName::Evening,
+            display_date: "Tuesday, 4 August 2026".into(),
+            generated_at: "2026-08-04T16:00:00Z".parse()?,
+            next_scheduled_at: "2026-08-05T06:00:00+02:00".parse()?,
+            stories,
+            lead_image: LeadImageV1 {
+                story_id,
+                url: "https://example.com/photo.jpg".into(),
+                alt: "Previous photo".into(),
+                credit: "Previous credit".into(),
+                source_page_url: "https://www.reuters.com/world/previous/photo".into(),
+            },
+        })
+    }
+
+    fn novel_results(count: usize) -> Vec<serde_json::Value> {
+        (0..count)
+            .map(|index| {
+                let url = if index % 2 == 0 {
+                    format!("https://www.wsj.com/world/europe/novel-{index}")
+                } else {
+                    format!("https://www.nytimes.com/2026/08/05/world/novel-{index}")
+                };
+                json!({
+                    "title": format!("Novel report {index}"),
+                    "url": url,
+                    "publishedDate": "2026-08-05T01:00:00Z",
+                    "summary": format!("Novel report {index} contains enough safe copy for deterministic selection.")
+                })
+            })
+            .collect()
+    }
+
+    fn request() -> std::result::Result<super::SearchRequest<'static>, Box<dyn std::error::Error>> {
+        let profile = edition_profile(&EditionName::Morning);
+        Ok(search_request(
+            profile,
+            publication_window(now()?, None)?,
+            profile.domains,
+        ))
+    }
+
+    fn normalized(
+        results: &[super::ExaResult],
+    ) -> std::result::Result<Vec<super::Candidate>, Box<dyn std::error::Error>> {
+        let profile = edition_profile(&EditionName::Morning);
+        Ok(normalize(
+            results,
+            publication_window(now()?, None)?,
+            profile.domains,
+            &HashSet::new(),
+            0,
+            true,
+        )
+        .candidates)
+    }
+
+    fn selected(
+        response: &ExaResponse,
+    ) -> std::result::Result<crate::model::ResearchEdition, Box<dyn std::error::Error>> {
+        let candidates = normalized(&response.results)?;
+        let selected = select(&candidates).ok_or("not enough candidates")?;
+        let stories = build_stories(selected);
+        Ok(ResearchEdition {
+            photo_candidates: photo_candidates(&stories),
+            stories,
+        })
+    }
+
     #[test]
     fn builds_exact_request_and_summer_boundaries()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let body = serde_json::to_value(search_request(now()?)?)?;
-        assert_eq!(body["query"], SEARCH_QUERY);
+        let at = Utc
+            .with_ymd_and_hms(2026, 8, 5, 4, 15, 0)
+            .single()
+            .ok_or("invalid morning time")?;
+        let window = publication_window(at, None)?;
+        let profile = edition_profile(&EditionName::Morning);
+        let body = serde_json::to_value(search_request(profile, window, profile.domains))?;
+        assert_eq!(body["query"], MORNING_QUERY);
         assert_eq!(body["category"], "news");
         assert_eq!(body["type"], "deep-reasoning");
         assert_eq!(body["numResults"], 10);
-        assert_eq!(body["includeDomains"], json!(DOMAINS));
-        assert_eq!(body["systemPrompt"], SYSTEM_PROMPT);
+        assert_eq!(
+            body["includeDomains"],
+            json!(["wsj.com", "nytimes.com", "ft.com", "reuters.com"])
+        );
+        assert_eq!(
+            body["systemPrompt"],
+            "Provide results from at least 3 distinct allowed sources. Avoid duplicate events between sources.\nPrefer consequential current reporting over analysis or opinion"
+        );
         assert_eq!(body["contents"]["summary"]["query"], SUMMARY_PROMPT);
-        assert_eq!(body["startPublishedDate"], "2026-08-04T22:00:00.000Z");
-        assert_eq!(body["endPublishedDate"], "2026-08-05T21:59:59.999Z");
+        assert_eq!(body["startPublishedDate"], "2026-08-04T15:00:00.000Z");
+        assert_eq!(body["endPublishedDate"], "2026-08-05T04:44:59.999Z");
         assert_eq!(body["outputSchema"], json!({ "type": "object" }));
         assert_eq!(body["stream"], false);
         assert_eq!(body["contents"]["maxAgeHours"], 0);
+
+        let evening_at = Utc
+            .with_ymd_and_hms(2026, 8, 5, 15, 0, 0)
+            .single()
+            .ok_or("invalid evening time")?;
+        let evening_window = publication_window(evening_at, None)?;
+        let evening_profile = edition_profile(&EditionName::Evening);
+        let evening = serde_json::to_value(search_request(
+            evening_profile,
+            evening_window,
+            evening_profile.domains,
+        ))?;
+        assert_eq!(evening["query"], EVENING_QUERY);
+        assert_eq!(
+            evening["includeDomains"],
+            json!(["handelsblatt.com", "tagesschau.de", "ft.com", "dw.com"])
+        );
+        assert_eq!(evening["startPublishedDate"], "2026-08-04T22:00:00.000Z");
+        assert_eq!(evening["endPublishedDate"], "2026-08-05T15:29:59.999Z");
         Ok(())
     }
 
@@ -887,6 +1374,239 @@ mod tests {
     }
 
     #[test]
+    fn candidate_cap_preserves_primary_window_rank_order()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let profile = edition_profile(&EditionName::Morning);
+        let primary = publication_window(now()?, None)?;
+        let primary_results = (0..20)
+            .map(|index| ExaResult {
+                title: format!("Primary story {index}"),
+                url: format!("https://www.nytimes.com/2026/08/05/world/story-{index}"),
+                published_date: Some("2026-08-05T01:00:00Z".into()),
+                image: None,
+                summary: Some(format!(
+                    "Primary report {index} contains enough safe copy for deterministic normalization."
+                )),
+            })
+            .collect::<Vec<_>>();
+        let mut candidates = normalize(
+            &primary_results,
+            primary,
+            profile.domains,
+            &HashSet::new(),
+            0,
+            true,
+        )
+        .candidates;
+        let prior = prior_day_window(primary)?;
+        let prior_results = vec![ExaResult {
+            title: "Prior story".into(),
+            url: "https://www.ft.com/content/prior-story".into(),
+            published_date: Some("2026-08-04T12:00:00Z".into()),
+            image: None,
+            summary: Some("Prior report contains enough safe copy for normalization.".into()),
+        }];
+        merge_candidates(
+            &mut candidates,
+            normalize(
+                &prior_results,
+                prior,
+                profile.domains,
+                &HashSet::new(),
+                2,
+                false,
+            )
+            .candidates,
+        );
+        candidates.reverse();
+        order_and_limit_candidates(&mut candidates);
+        assert_eq!(candidates.len(), 18);
+        assert!(candidates.iter().all(|candidate| candidate.primary_window));
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.rank)
+                .collect::<Vec<_>>(),
+            (0..18).map(|rank| (0, rank)).collect::<Vec<_>>()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn filters_invalid_carries_and_preserves_deployed_order()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut previous = previous_edition(6)?;
+        let expected = [
+            previous
+                .stories
+                .get(3)
+                .map(|story| story.id.clone())
+                .ok_or("missing fourth story")?,
+            previous
+                .stories
+                .get(5)
+                .map(|story| story.id.clone())
+                .ok_or("missing sixth story")?,
+        ];
+        if let Some(story) = previous.stories.get_mut(0) {
+            story.id.clear();
+        }
+        if let Some(source) = previous
+            .stories
+            .get_mut(1)
+            .and_then(|story| story.sources.first_mut())
+        {
+            source.name = "Wrong provider".into();
+        }
+        if let Some(story) = previous.stories.get_mut(2) {
+            story.published_at = now()? + chrono::Duration::minutes(31);
+        }
+        let duplicate_source = previous
+            .stories
+            .get(3)
+            .and_then(|story| story.sources.first())
+            .cloned()
+            .ok_or("missing duplicate source")?;
+        if let Some(story) = previous.stories.get_mut(4) {
+            story.sources = vec![duplicate_source];
+        }
+
+        assert!(carried_story(&previous.stories[0], now()?).is_none());
+        let carried = carry_candidates(Some(&previous), now()?, &[]);
+        assert_eq!(
+            carried
+                .iter()
+                .map(|story| story.id.clone())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(carried.iter().all(|story| story.is_carried));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fills_two_novel_stories_with_four_deployed_stories()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "requestId": "two-novel",
+                "results": novel_results(2)
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let previous = previous_edition(6)?;
+        let expected_carry_ids = previous
+            .stories
+            .iter()
+            .take(4)
+            .map(|story| story.id.clone())
+            .collect::<Vec<_>>();
+        let base = Url::parse(&format!("{}/", server.uri()))?;
+        let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
+        let edition = client.research(now()?, Some(&previous)).await?;
+
+        assert_eq!(edition.stories.len(), 6);
+        assert!(
+            edition
+                .stories
+                .iter()
+                .take(2)
+                .all(|story| !story.is_carried)
+        );
+        assert_eq!(
+            edition
+                .stories
+                .iter()
+                .skip(2)
+                .map(|story| story.id.clone())
+                .collect::<Vec<_>>(),
+            expected_carry_ids
+        );
+        assert!(edition.stories.iter().skip(2).all(|story| story.is_carried));
+        assert!(!edition.stories[0].is_carried);
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("request recording is disabled")?;
+        assert_eq!(requests.len(), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reports_exact_combined_content_shortfall()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "requestId": "two-novel",
+                "results": novel_results(2)
+            })))
+            .up_to_n_times(2)
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "requestId": "prior-empty",
+                "results": []
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let previous = previous_edition(2)?;
+        let base = Url::parse(&format!("{}/", server.uri()))?;
+        let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
+        let error = client
+            .research(now()?, Some(&previous))
+            .await
+            .err()
+            .ok_or("shortfall unexpectedly succeeded")?;
+        let crate::error::GeneratorError::Validation(message) = error else {
+            return Err("unexpected shortfall error variant".into());
+        };
+        assert_eq!(
+            message,
+            "only 2 novel and 2 carried stories were usable; six are required"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refuses_to_publish_without_any_novel_lead()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "requestId": "empty",
+                "results": []
+            })))
+            .expect(3)
+            .mount(&server)
+            .await;
+        let base = Url::parse(&format!("{}/", server.uri()))?;
+        let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
+        let error = client
+            .research(now()?, None)
+            .await
+            .err()
+            .ok_or("empty research unexpectedly succeeded")?;
+        let crate::error::GeneratorError::Validation(message) = error else {
+            return Err("unexpected no-lead error variant".into());
+        };
+        assert_eq!(
+            message,
+            "exa returned no novel usable stories after the prior-day fallback; refusing to publish without a fresh lead"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn filters_freshness_safety_and_duplicate_urls()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut results = fixture()?.results;
@@ -896,13 +1616,13 @@ mod tests {
             .ok_or("missing first result")?;
         let duplicate = results.last_mut().ok_or("missing last result")?;
         duplicate.url = duplicate_url;
-        let candidates = normalize(&results, now()?)?;
-        let day = berlin_day(now()?)?;
+        let candidates = normalized(&results)?;
+        let window = publication_window(now()?, None)?;
         assert_eq!(candidates.len(), 7);
         assert!(
             candidates
                 .iter()
-                .all(|candidate| { candidate.published_at >= day.start })
+                .all(|candidate| candidate.published_at >= window.start)
         );
         assert_eq!(
             candidates
@@ -916,7 +1636,7 @@ mod tests {
 
     #[test]
     fn leaves_same_event_detection_to_exa() -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let candidates = normalize(&fixture()?.results, now()?)?;
+        let candidates = normalized(&fixture()?.results)?;
         assert_eq!(candidates.len(), 8);
         assert_eq!(
             candidates
@@ -924,6 +1644,134 @@ mod tests {
                 .filter(|candidate| candidate.provider == "Reuters")
                 .count(),
             2
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn counts_each_normalization_rejection_reason()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut results = fixture()?.results;
+        let duplicate = results.get(4).cloned().ok_or("missing duplicate control")?;
+        results.push(duplicate);
+        if let Some(result) = results.get_mut(1) {
+            result.summary = None;
+        }
+        if let Some(result) = results.get_mut(2) {
+            result.published_date = None;
+        }
+        let previous =
+            ["https://www.reuters.com/world/europe/atlantic-security-talks-2026-08-05".into()]
+                .into_iter()
+                .collect::<HashSet<_>>();
+        let profile = edition_profile(&EditionName::Morning);
+        let normalization = normalize(
+            &results,
+            publication_window(now()?, None)?,
+            profile.domains,
+            &previous,
+            0,
+            true,
+        );
+        assert_eq!(normalization.candidates.len(), 5);
+        assert_eq!(normalization.rejections.missing_or_invalid_copy, 1);
+        assert_eq!(normalization.rejections.missing_or_invalid_date, 1);
+        assert_eq!(normalization.rejections.outside_request_window, 1);
+        assert_eq!(normalization.rejections.disallowed_or_non_article_url, 1);
+        assert_eq!(normalization.rejections.duplicate_canonical_url, 1);
+        assert_eq!(normalization.rejections.repeated_previous_edition_url, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn live_normalization_enforces_active_edition_profile()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let results = vec![
+            ExaResult {
+                title: "German policy report".into(),
+                url: "https://www.dw.com/en/germany/policy/a-123456".into(),
+                published_date: Some("2026-08-05T01:00:00Z".into()),
+                image: None,
+                summary: Some(
+                    "German officials announced a consequential policy change today.".into(),
+                ),
+            },
+            ExaResult {
+                title: "International policy report".into(),
+                url: "https://www.reuters.com/world/europe/policy-report".into(),
+                published_date: Some("2026-08-05T01:00:00Z".into()),
+                image: None,
+                summary: Some(
+                    "International officials announced a consequential policy change today.".into(),
+                ),
+            },
+        ];
+        let evening_at = Utc
+            .with_ymd_and_hms(2026, 8, 5, 15, 0, 0)
+            .single()
+            .ok_or("invalid evening time")?;
+        let evening_profile = edition_profile(&EditionName::Evening);
+        let evening = normalize(
+            &results,
+            publication_window(evening_at, None)?,
+            evening_profile.domains,
+            &HashSet::new(),
+            0,
+            true,
+        );
+        assert_eq!(evening.candidates.len(), 1);
+        assert_eq!(evening.candidates[0].provider, "DW");
+        assert_eq!(evening.rejections.disallowed_or_non_article_url, 1);
+
+        let morning_profile = edition_profile(&EditionName::Morning);
+        let morning = normalize(
+            &results,
+            publication_window(now()?, None)?,
+            morning_profile.domains,
+            &HashSet::new(),
+            0,
+            true,
+        );
+        assert_eq!(morning.candidates.len(), 1);
+        assert_eq!(morning.candidates[0].provider, "Reuters");
+        assert_eq!(morning.rejections.disallowed_or_non_article_url, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn rotates_stale_and_dominant_domains_without_dropping_below_two()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let profile = edition_profile(&EditionName::Morning);
+        let results = fixture()?.results;
+        let previous = [
+            "https://www.reuters.com/world/europe/atlantic-security-talks-2026-08-05",
+            "https://www.ft.com/content/00000000-0000-0000-0000-000000000001",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<HashSet<_>>();
+        assert_eq!(
+            retry_domains(profile.domains, profile.domains, &results, &previous),
+            ["wsj.com", "nytimes.com"]
+        );
+
+        let no_previous = HashSet::new();
+        assert_eq!(
+            retry_domains(profile.domains, profile.domains, &results, &no_previous),
+            ["wsj.com", "nytimes.com", "ft.com"]
+        );
+        assert_eq!(
+            retry_domains(profile.domains, profile.domains, &[], &no_previous),
+            ["nytimes.com", "ft.com", "reuters.com"]
+        );
+        assert_eq!(
+            retry_domains(
+                profile.domains,
+                &["ft.com", "reuters.com"],
+                &results,
+                &previous
+            ),
+            ["ft.com", "reuters.com"]
         );
         Ok(())
     }
@@ -975,7 +1823,7 @@ mod tests {
     fn selects_six_without_turning_preferences_into_blockers()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let response = fixture()?;
-        let edition = normalize_and_select(&response, now()?, None)?;
+        let edition = selected(&response)?;
         assert_eq!(edition.stories.len(), 6);
         assert!(edition.stories.iter().all(|story| story.sources.len() == 1));
         assert!(edition.stories.iter().all(|story| !story.is_developing));
@@ -998,10 +1846,11 @@ mod tests {
     }
 
     #[test]
-    fn fails_when_fewer_than_six_survive() -> std::result::Result<(), Box<dyn std::error::Error>> {
+    fn selects_all_novel_when_fewer_than_six_survive()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut response = fixture()?;
         response.results.truncate(5);
-        assert!(normalize_and_select(&response, now()?, None).is_err());
+        assert_eq!(selected(&response)?.stories.len(), 5);
         Ok(())
     }
 
@@ -1038,8 +1887,18 @@ mod tests {
             .await;
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
-        let response = client.search(now()?).await?;
+        let body = request()?;
+        let response = client.send_with_retry(&body).await?;
         assert_eq!(response.request_id.as_deref(), Some("retried"));
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("request recording is disabled")?;
+        assert_eq!(requests.len(), 2);
+        assert_eq!(
+            requests.first().map(|request| request.body.as_slice()),
+            requests.get(1).map(|request| request.body.as_slice())
+        );
         Ok(())
     }
 
@@ -1076,7 +1935,7 @@ mod tests {
 
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
-        let response = client.search_with_fallback(now()?).await?;
+        let edition = client.research(now()?, None).await?;
         let requests = server
             .received_requests()
             .await
@@ -1086,21 +1945,20 @@ mod tests {
             .iter()
             .map(|request| serde_json::from_slice::<serde_json::Value>(&request.body))
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        assert_eq!(bodies.first(), bodies.get(1));
+        assert_eq!(
+            bodies.first().map(|body| &body["includeDomains"]),
+            Some(&json!(["wsj.com", "nytimes.com", "ft.com", "reuters.com"]))
+        );
+        assert_eq!(
+            bodies.get(1).map(|body| &body["includeDomains"]),
+            Some(&json!(["wsj.com", "nytimes.com", "reuters.com"]))
+        );
         assert!(
             bodies
                 .iter()
                 .all(|body| body["contents"]["maxAgeHours"] == 0)
         );
-        assert_eq!(normalize(&response.results, now()?)?.len(), 8);
-        assert_eq!(
-            response.cost_dollars.as_ref().and_then(|cost| cost.total),
-            Some(0.034)
-        );
-        assert_eq!(
-            normalize_and_select(&response, now()?, None)?.stories.len(),
-            6
-        );
+        assert_eq!(edition.stories.len(), 6);
         Ok(())
     }
 
@@ -1120,13 +1978,98 @@ mod tests {
 
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
-        let response = client.search_with_fallback(now()?).await?;
+        let edition = client.research(now()?, None).await?;
         let requests = server
             .received_requests()
             .await
             .ok_or("request recording is disabled")?;
         assert_eq!(requests.len(), 1);
-        assert_eq!(response.results.len(), 10);
+        assert_eq!(edition.stories.len(), 6);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn uses_adjacent_prior_day_window_after_combined_shortfall()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        for request_id in ["initial-empty", "retry-empty"] {
+            Mock::given(method("POST"))
+                .and(path("/search"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "requestId": request_id,
+                    "costDollars": { "total": 0.01 },
+                    "results": []
+                })))
+                .up_to_n_times(1)
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let prior_results = (0..6)
+            .map(|index| {
+                let url = if index % 2 == 0 {
+                    format!("https://www.ft.com/content/prior-{index}")
+                } else {
+                    format!("https://www.reuters.com/world/europe/prior-{index}")
+                };
+                json!({
+                    "title": format!("Prior report {index}"),
+                    "url": url,
+                    "publishedDate": "2026-08-04T12:00:00Z",
+                    "summary": format!("Prior report {index} contains enough safe copy for selection.")
+                })
+            })
+            .collect::<Vec<_>>();
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "requestId": "prior-day",
+                "costDollars": { "total": 0.02 },
+                "results": prior_results
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let base = Url::parse(&format!("{}/", server.uri()))?;
+        let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
+        let edition = client.research(now()?, None).await?;
+        assert_eq!(edition.stories.len(), 6);
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("request recording is disabled")?;
+        assert_eq!(requests.len(), 3);
+        let bodies = requests
+            .iter()
+            .map(|request| serde_json::from_slice::<serde_json::Value>(&request.body))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert_eq!(
+            bodies.first().map(|body| &body["startPublishedDate"]),
+            Some(&json!("2026-08-04T15:00:00.000Z"))
+        );
+        assert_eq!(
+            bodies.get(1).map(|body| &body["startPublishedDate"]),
+            bodies.first().map(|body| &body["startPublishedDate"])
+        );
+        assert_eq!(
+            bodies.get(2).map(|body| &body["startPublishedDate"]),
+            Some(&json!("2026-08-03T22:00:00.000Z"))
+        );
+        assert_eq!(
+            bodies.get(2).map(|body| &body["endPublishedDate"]),
+            Some(&json!("2026-08-04T14:59:59.999Z"))
+        );
+        assert_eq!(
+            bodies.get(2).map(|body| &body["includeDomains"]),
+            Some(&json!(["ft.com", "reuters.com"]))
+        );
+        assert_eq!(
+            bodies.get(2).map(|body| &body["systemPrompt"]),
+            Some(&json!(
+                "Provide results from at least 2 distinct allowed sources. Avoid duplicate events between sources.\nPrefer consequential current reporting over analysis or opinion"
+            ))
+        );
         Ok(())
     }
 
@@ -1149,7 +2092,8 @@ mod tests {
             .await;
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
-        let response = client.search(now()?).await?;
+        let body = request()?;
+        let response = client.send_with_retry(&body).await?;
         assert_eq!(response.request_id.as_deref(), Some("server-retried"));
         Ok(())
     }
@@ -1169,7 +2113,8 @@ mod tests {
             .await;
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
-        let Some(error) = client.search(now()?).await.err() else {
+        let body = request()?;
+        let Some(error) = client.send_with_retry(&body).await.err() else {
             return Err("budget error unexpectedly succeeded".into());
         };
         let message = error.to_string();
@@ -1181,14 +2126,14 @@ mod tests {
     #[test]
     fn earlier_ranks_break_equal_scores() {
         let first = super::SelectionScore {
+            primary_window: 6,
             required_categories: 1,
             providers: 1,
             has_image: false,
-            novel_urls: 1,
-            ranks: vec![0, 1, 2, 3, 4, 5],
+            ranks: vec![(0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5)],
         };
         let second = super::SelectionScore {
-            ranks: vec![0, 1, 2, 3, 4, 6],
+            ranks: vec![(0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (1, 0)],
             ..first.clone()
         };
         assert!(first.better_than(&second));
@@ -1198,18 +2143,18 @@ mod tests {
     #[test]
     fn selection_preferences_are_lexicographic() {
         let baseline = super::SelectionScore {
+            primary_window: 6,
             required_categories: 1,
             providers: 1,
             has_image: false,
-            novel_urls: 1,
-            ranks: vec![0, 1, 2, 3, 4, 5],
+            ranks: vec![(0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5)],
         };
         let category = super::SelectionScore {
+            primary_window: 6,
             required_categories: 2,
             providers: 0,
             has_image: false,
-            novel_urls: 0,
-            ranks: vec![4, 5, 6, 7, 8, 9],
+            ranks: vec![(0, 4), (0, 5), (0, 6), (0, 7), (0, 8), (0, 9)],
         };
         let provider = super::SelectionScore {
             providers: 2,
@@ -1219,15 +2164,17 @@ mod tests {
             has_image: true,
             ..baseline.clone()
         };
-        let novelty = super::SelectionScore {
-            novel_urls: 2,
-            ..baseline.clone()
+        let prior_day = super::SelectionScore {
+            primary_window: 5,
+            required_categories: 4,
+            providers: 3,
+            has_image: true,
+            ranks: vec![(0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (2, 0)],
         };
         assert!(category.better_than(&baseline));
         assert!(provider.better_than(&baseline));
         assert!(image.better_than(&baseline));
-        assert!(novelty.better_than(&baseline));
+        assert!(baseline.better_than(&prior_day));
         assert!(provider.better_than(&image));
-        assert!(image.better_than(&novelty));
     }
 }

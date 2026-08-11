@@ -17,9 +17,9 @@ use url::Url;
 
 use crate::{
     error::{GeneratorError, Result, io_error},
-    exa::{ExaClient, fit_summary, normalize_and_select},
+    exa::{ExaClient, fit_summary},
     model::{EditionV1, ResearchEdition},
-    photo::{SafeHttp, fixture_photo},
+    photo::{PhotoAsset, SafeHttp, fixture_photo},
 };
 
 pub struct GenerateOptions {
@@ -40,6 +40,25 @@ struct PreviousEdition {
 struct PreviousPhoto {
     name: String,
     bytes: Vec<u8>,
+    story_id: String,
+    alt: String,
+    credit: String,
+    source_page_url: String,
+}
+
+impl PreviousPhoto {
+    fn into_asset(self) -> (String, PhotoAsset) {
+        (
+            self.name,
+            PhotoAsset {
+                bytes: self.bytes,
+                story_id: self.story_id,
+                alt: self.alt,
+                credit: self.credit,
+                source_page_url: self.source_page_url,
+            },
+        )
+    }
 }
 
 /// Generates and atomically publishes a complete static edition of The Berlin Times.
@@ -48,7 +67,7 @@ struct PreviousPhoto {
 ///
 /// Returns error when research, validation, photo processing, or publication fails.
 pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
-    let previous = if options.fixture.is_some() {
+    let mut previous = if options.fixture.is_some() {
         None
     } else {
         fetch_previous_edition(&options.public_base_url).await
@@ -60,6 +79,7 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
     };
     validate_result(&research, options.at)?;
 
+    let mut reused_photo_name = None;
     let photo = if let Some(path) = &options.fixture_image {
         let bytes = tokio::fs::read(path).await.map_err(io_error(path))?;
         let candidate = research
@@ -77,19 +97,34 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
             "--fixture-image is required with --fixture".into(),
         ));
     } else {
-        SafeHttp::new().build_lead_photo(&research).await?
+        match SafeHttp::new().build_lead_photo(&research).await {
+            Ok(photo) => photo,
+            Err(error) => {
+                let reused = previous.as_mut().and_then(|previous| {
+                    take_reusable_previous_photo(&mut previous.photo, &research)
+                });
+                let Some((name, photo)) = reused else {
+                    return Err(error);
+                };
+                reused_photo_name = Some(name);
+                photo
+            }
+        }
     };
 
-    promote_photo_story(&mut research, &photo.story_id)?;
     fit_layout_summaries(&mut research);
     validate_result(&research, options.at)?;
 
     let (edition, photo_name) =
         site::assemble_edition(&research, &photo, &options.public_base_url, options.at)?;
-    let previous_photo = previous
-        .as_ref()
-        .and_then(|previous| previous.photo.as_ref())
-        .map(|photo| (photo.name.as_str(), photo.bytes.as_slice()));
+    let previous_photo = if let Some(name) = reused_photo_name.as_deref() {
+        Some((name, photo.bytes.as_slice()))
+    } else {
+        previous
+            .as_ref()
+            .and_then(|previous| previous.photo.as_ref())
+            .map(|photo| (photo.name.as_str(), photo.bytes.as_slice()))
+    };
     site::publish_site(
         &options.output,
         &edition,
@@ -114,8 +149,7 @@ async fn research_live(
         .timeout(Duration::from_secs(60))
         .build()?;
     let client = ExaClient::new(http, &options.api_base, api_key)?;
-    let response = client.search_with_fallback(options.at).await?;
-    normalize_and_select(&response, options.at, previous)
+    client.research(options.at, previous).await
 }
 
 fn validation_report(research: &ResearchEdition, at: DateTime<Utc>) -> validate::ValidationReport {
@@ -166,12 +200,30 @@ async fn fetch_previous_photo(public_base_url: &Url, edition: &EditionV1) -> Opt
         .fetch_published_photo(&edition.lead_image.url)
         .await
     {
-        Ok(bytes) => Some(PreviousPhoto { name, bytes }),
+        Ok(bytes) => Some(PreviousPhoto {
+            name,
+            bytes,
+            story_id: edition.lead_image.story_id.clone(),
+            alt: edition.lead_image.alt.clone(),
+            credit: edition.lead_image.credit.clone(),
+            source_page_url: edition.lead_image.source_page_url.clone(),
+        }),
         Err(error) => {
             warn!(%error, "previous lead photo could not be retained");
             None
         }
     }
+}
+
+fn take_reusable_previous_photo(
+    previous: &mut Option<PreviousPhoto>,
+    research: &ResearchEdition,
+) -> Option<(String, PhotoAsset)> {
+    let story_id = previous.as_ref().map(|photo| photo.story_id.as_str())?;
+    if !research.stories.iter().any(|story| story.id == story_id) {
+        return None;
+    }
+    previous.take().map(PreviousPhoto::into_asset)
 }
 
 fn previous_photo_name(public_base_url: &Url, image_url: &str) -> Option<String> {
@@ -189,28 +241,6 @@ fn previous_photo_name(public_base_url: &Url, image_url: &str) -> Option<String>
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("jpg"));
     (name.starts_with("lead-") && is_jpeg && !name.contains('/')).then(|| name.into())
-}
-
-fn promote_photo_story(edition: &mut ResearchEdition, story_id: &str) -> Result<()> {
-    let story_index = edition
-        .stories
-        .iter()
-        .position(|story| story.id == story_id)
-        .ok_or_else(|| GeneratorError::Config("lead photo story was not selected".into()))?;
-    if story_index > 0 {
-        let story = edition.stories.remove(story_index);
-        edition.stories.insert(0, story);
-    }
-    let candidate_index = edition
-        .photo_candidates
-        .iter()
-        .position(|candidate| candidate == story_id)
-        .ok_or_else(|| GeneratorError::Config("lead photo candidate was not ranked".into()))?;
-    if candidate_index > 0 {
-        let candidate = edition.photo_candidates.remove(candidate_index);
-        edition.photo_candidates.insert(0, candidate);
-    }
-    Ok(())
 }
 
 fn fit_layout_summaries(edition: &mut ResearchEdition) {
@@ -233,7 +263,8 @@ mod tests {
     use url::Url;
 
     use super::{
-        GenerateOptions, fit_layout_summaries, generate, previous_photo_name, promote_photo_story,
+        GenerateOptions, PreviousPhoto, fit_layout_summaries, generate, previous_photo_name,
+        take_reusable_previous_photo,
     };
     use crate::model::ResearchEdition;
 
@@ -286,28 +317,50 @@ mod tests {
     }
 
     #[test]
-    fn promotes_verified_photo_story() -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let mut edition = serde_json::from_str::<ResearchEdition>(include_str!(
+    fn reuses_cached_photo_only_for_a_selected_story()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let research = serde_json::from_str::<ResearchEdition>(include_str!(
             "../fixtures/valid-research.json"
         ))?;
-        let story_id = edition
+        let story_id = research
             .stories
-            .get(2)
+            .get(1)
             .map(|story| story.id.clone())
-            .ok_or("fixture must contain third story")?;
+            .ok_or("fixture must contain second story")?;
+        let bytes = vec![1, 2, 3, 4];
+        let original_pointer = bytes.as_ptr();
+        let mut cached = Some(PreviousPhoto {
+            name: "lead-previous.jpg".into(),
+            bytes,
+            story_id: story_id.clone(),
+            alt: "Cached alt".into(),
+            credit: "Cached credit".into(),
+            source_page_url: "https://www.ft.com/content/cached-photo".into(),
+        });
 
-        promote_photo_story(&mut edition, &story_id)?;
+        let (old_name, asset) =
+            take_reusable_previous_photo(&mut cached, &research).ok_or("photo was not reused")?;
+        assert_eq!(old_name, "lead-previous.jpg");
+        assert_eq!(asset.story_id, story_id);
+        assert_eq!(asset.bytes, [1, 2, 3, 4]);
+        assert_eq!(asset.bytes.as_ptr(), original_pointer);
+        assert!(cached.is_none());
 
-        assert_eq!(
-            edition.stories.first().map(|story| &story.id),
-            Some(&story_id)
-        );
-        assert_eq!(edition.photo_candidates.first(), Some(&story_id));
+        let mut unrelated = Some(PreviousPhoto {
+            name: "lead-unrelated.jpg".into(),
+            bytes: vec![5, 6, 7],
+            story_id: "not-selected".into(),
+            alt: "Unrelated alt".into(),
+            credit: "Unrelated credit".into(),
+            source_page_url: "https://www.reuters.com/world/unrelated/photo".into(),
+        });
+        assert!(take_reusable_previous_photo(&mut unrelated, &research).is_none());
+        assert!(unrelated.is_some());
         Ok(())
     }
 
     #[test]
-    fn fits_summaries_after_promoting_lead_story()
+    fn fits_lead_and_supporting_summaries_without_reordering()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut edition = serde_json::from_str::<ResearchEdition>(include_str!(
             "../fixtures/valid-research.json"
@@ -317,18 +370,22 @@ mod tests {
             .stories
             .iter_mut()
             .for_each(|story| story.summary = format!("{summary}."));
-        let story_id = edition
+        let lead_id = edition
             .stories
-            .get(2)
+            .first()
             .map(|story| story.id.clone())
+            .ok_or("fixture must contain a lead")?;
+        let former_lead = edition
+            .stories
+            .get_mut(2)
             .ok_or("fixture must contain third story")?;
+        former_lead.is_carried = true;
 
-        promote_photo_story(&mut edition, &story_id)?;
         fit_layout_summaries(&mut edition);
 
         assert_eq!(
             edition.stories.first().map(|story| &story.id),
-            Some(&story_id)
+            Some(&lead_id)
         );
         assert_eq!(
             edition
@@ -342,7 +399,14 @@ mod tests {
                 .stories
                 .iter()
                 .skip(1)
-                .all(|story| { story.summary.split_whitespace().count() <= 30 })
+                .all(|story| story.summary.split_whitespace().count() <= 30)
+        );
+        assert_eq!(
+            edition
+                .stories
+                .get(2)
+                .map(|story| story.summary.split_whitespace().count()),
+            Some(30)
         );
         Ok(())
     }

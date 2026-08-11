@@ -1,4 +1,6 @@
-use chrono::{DateTime, Datelike, FixedOffset, LocalResult, NaiveDate, TimeZone, Timelike, Utc};
+use chrono::{
+    DateTime, Datelike, FixedOffset, LocalResult, NaiveDate, TimeDelta, TimeZone, Timelike, Utc,
+};
 use chrono_tz::Europe::Berlin;
 
 use crate::{
@@ -7,12 +9,18 @@ use crate::{
 };
 
 const MORNING_HOUR: u32 = 6;
-const MORNING_MINUTE: u32 = 30;
+const MORNING_MINUTE: u32 = 0;
 const EVENING_HOUR: u32 = 17;
 const EVENING_MINUTE: u32 = 0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BerlinDay {
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicationWindow {
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
 }
@@ -25,6 +33,51 @@ pub fn berlin_day(now: DateTime<Utc>) -> Result<BerlinDay> {
     Ok(BerlinDay {
         start: local_time(date, 0, 0)?.with_timezone(&Utc),
         end: local_time(tomorrow, 0, 0)?.with_timezone(&Utc),
+    })
+}
+
+pub fn publication_window(
+    now: DateTime<Utc>,
+    previous_evening_at: Option<DateTime<Utc>>,
+) -> Result<PublicationWindow> {
+    let start = match edition_name(now) {
+        EditionName::Morning => {
+            let previous_date = now
+                .with_timezone(&Berlin)
+                .date_naive()
+                .pred_opt()
+                .ok_or_else(|| {
+                    GeneratorError::Config("cannot calculate previous berlin date".into())
+                })?;
+            let nominal_start =
+                local_time(previous_date, EVENING_HOUR, EVENING_MINUTE)?.with_timezone(&Utc);
+
+            previous_evening_at
+                .filter(|generated_at| {
+                    generated_at.with_timezone(&Berlin).date_naive() == previous_date
+                        && *generated_at >= nominal_start
+                        && *generated_at < now
+                })
+                .unwrap_or(nominal_start)
+        }
+        EditionName::Evening => berlin_day(now)?.start,
+    };
+    let end = now
+        .checked_add_signed(TimeDelta::minutes(30))
+        .ok_or_else(|| GeneratorError::Config("cannot calculate publication window end".into()))?;
+
+    Ok(PublicationWindow { start, end })
+}
+
+pub fn prior_day_window(primary: PublicationWindow) -> Result<PublicationWindow> {
+    let preceding_instant = primary
+        .start
+        .checked_sub_signed(TimeDelta::milliseconds(1))
+        .ok_or_else(|| GeneratorError::Config("cannot calculate prior-day window".into()))?;
+
+    Ok(PublicationWindow {
+        start: berlin_day(preceding_instant)?.start,
+        end: primary.start,
     })
 }
 
@@ -75,29 +128,116 @@ fn local_time(date: NaiveDate, hour: u32, minute: u32) -> Result<DateTime<chrono
 
 #[cfg(test)]
 mod tests {
-    use chrono::{TimeZone, Utc};
+    use chrono::{DateTime, TimeZone, Utc};
 
-    use super::{edition_name, next_scheduled_at};
+    use super::{
+        PublicationWindow, edition_name, next_scheduled_at, prior_day_window, publication_window,
+    };
     use crate::model::EditionName;
+
+    fn utc(value: &str) -> DateTime<Utc> {
+        value.parse().ok().unwrap_or(DateTime::<Utc>::MIN_UTC)
+    }
 
     #[test]
     fn schedules_across_summer_time() {
-        let now = Utc.with_ymd_and_hms(2026, 8, 5, 5, 0, 0).single();
-        let next = now.and_then(|value| next_scheduled_at(value).ok());
+        let before_morning = utc("2026-08-05T03:59:59Z");
+        let at_morning = utc("2026-08-05T04:00:00Z");
         assert_eq!(
-            next.map(|value| value.to_rfc3339()),
+            next_scheduled_at(before_morning)
+                .ok()
+                .map(|value| value.to_rfc3339()),
+            Some("2026-08-05T06:00:00+02:00".into())
+        );
+        assert_eq!(
+            next_scheduled_at(at_morning)
+                .ok()
+                .map(|value| value.to_rfc3339()),
             Some("2026-08-05T17:00:00+02:00".into())
         );
     }
 
     #[test]
     fn schedules_across_winter_time() {
-        let now = Utc.with_ymd_and_hms(2026, 12, 5, 18, 0, 0).single();
-        let next = now.and_then(|value| next_scheduled_at(value).ok());
+        let now = utc("2026-12-05T18:00:00Z");
         assert_eq!(
-            next.map(|value| value.to_rfc3339()),
-            Some("2026-12-06T06:30:00+01:00".into())
+            next_scheduled_at(now).ok().map(|value| value.to_rfc3339()),
+            Some("2026-12-06T06:00:00+01:00".into())
         );
+    }
+
+    #[test]
+    fn builds_morning_window_from_valid_previous_evening() {
+        for (now, previous, expected_start) in [
+            (
+                "2026-08-05T04:00:00Z",
+                "2026-08-04T15:12:00Z",
+                "2026-08-04T15:12:00Z",
+            ),
+            (
+                "2026-12-05T05:00:00Z",
+                "2026-12-04T16:12:00Z",
+                "2026-12-04T16:12:00Z",
+            ),
+        ] {
+            let window = publication_window(utc(now), Some(utc(previous))).ok();
+            assert_eq!(
+                window,
+                Some(PublicationWindow {
+                    start: utc(expected_start),
+                    end: utc(now) + chrono::TimeDelta::minutes(30),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn morning_window_rejects_invalid_previous_metadata() {
+        let now = utc("2026-08-05T04:00:00Z");
+        for previous in [
+            None,
+            Some(utc("2026-08-03T16:00:00Z")),
+            Some(utc("2026-08-04T14:59:59Z")),
+            Some(now),
+        ] {
+            assert_eq!(
+                publication_window(now, previous)
+                    .ok()
+                    .map(|value| value.start),
+                Some(utc("2026-08-04T15:00:00Z"))
+            );
+        }
+    }
+
+    #[test]
+    fn evening_window_starts_at_berlin_midnight() {
+        assert_eq!(
+            publication_window(utc("2026-08-05T15:00:00Z"), None)
+                .ok()
+                .map(|value| value.start),
+            Some(utc("2026-08-04T22:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn prior_day_windows_are_non_empty_adjacent_and_non_overlapping() {
+        for (now, expected_start) in [
+            ("2026-08-05T04:00:00Z", "2026-08-03T22:00:00Z"),
+            ("2026-08-05T15:00:00Z", "2026-08-03T22:00:00Z"),
+            ("2026-12-05T05:00:00Z", "2026-12-03T23:00:00Z"),
+            ("2026-12-05T16:00:00Z", "2026-12-03T23:00:00Z"),
+        ] {
+            let primary = publication_window(utc(now), None);
+            let prior = primary.ok().and_then(|value| prior_day_window(value).ok());
+            assert_eq!(prior.map(|value| value.start), Some(utc(expected_start)));
+            assert!(prior.is_some_and(|value| value.start < value.end));
+            assert_eq!(
+                prior.map(|value| value.end),
+                publication_window(utc(now), None)
+                    .ok()
+                    .map(|value| value.start)
+            );
+        }
     }
 
     #[test]
