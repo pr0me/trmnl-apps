@@ -18,11 +18,13 @@ async function fixture(name) {
   return JSON.parse(await readFile(join(fixtureDirectory, `${name}.json`), "utf8"));
 }
 
-test("calendar payload uses the selected merge source with the configured instance as fallback", () => {
-  const selected = { events: [{ summary: "Selected" }] };
-  const fallback = { events: [{ summary: "Fallback" }] };
-  assert.equal(calendarPayload({ calendar_source: selected }), selected);
-  assert.equal(calendarPayload({ google_calendar_409973: fallback }), fallback);
+test("calendar payload accepts hosted polling and local fixture shapes", () => {
+  const direct = { items: [{ summary: "Direct" }] };
+  const indexed = { items: [{ summary: "Indexed" }] };
+  const fixturePayload = { events: [{ summary: "Fixture" }] };
+  assert.equal(calendarPayload(direct), direct);
+  assert.equal(calendarPayload({ IDX_0: indexed }), indexed);
+  assert.equal(calendarPayload({ calendar_source: fixturePayload }), fixturePayload);
   assert.equal(calendarPayload({}), null);
 });
 
@@ -52,6 +54,35 @@ test("calendar normalization removes elapsed events and limits the ordered resul
   assert.equal(events[0].time, "ganztägig");
   assert.equal(events[1].time, "10:30");
   assert.ok(events.every((event) => event.title !== "Schon vorbei"));
+});
+
+test("Google Calendar events normalize timed and all-day entries", () => {
+  const payload = {
+    items: [
+      {
+        status: "confirmed",
+        summary: "Abendessen",
+        start: { dateTime: "2026-08-08T18:30:00+02:00" },
+        end: { dateTime: "2026-08-08T20:00:00+02:00" },
+      },
+      {
+        status: "confirmed",
+        summary: "Familientag",
+        start: { date: "2026-08-09" },
+        end: { date: "2026-08-10" },
+      },
+      {
+        status: "cancelled",
+        summary: "Abgesagt",
+        start: { dateTime: "2026-08-08T17:00:00+02:00" },
+        end: { dateTime: "2026-08-08T18:00:00+02:00" },
+      },
+    ],
+  };
+  const events = normalizeEvents(payload, new Date("2026-08-08T14:00:00Z"));
+  assert.deepEqual(events.map((event) => event.title), ["Abendessen", "Familientag"]);
+  assert.equal(events[0].time, "18:30");
+  assert.equal(events[1].time, "ganztägig");
 });
 
 test("ongoing multi-day all-day events remain visible", async () => {
