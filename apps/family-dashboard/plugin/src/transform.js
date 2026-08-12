@@ -1,5 +1,6 @@
 const BERLIN_TIME_ZONE = "Europe/Berlin";
-const DEFAULT_CALENDAR_PLUGIN_SETTING_ID = "409973";
+const DEFAULT_CALENDAR_MERGE_KEY = "google_calendar_409973";
+const FIXTURE_URL_PREFIX = "http://host.docker.internal:8010/";
 const MAX_RESPONSE_BYTES = 250_000;
 const REQUEST_TIMEOUT_MS = 1_500;
 
@@ -211,31 +212,22 @@ function fixtureSources(input) {
   if (!sources || typeof sources !== "object") {
     return null;
   }
-  const values = [sources.calendar, sources.weather, sources.city, sources.hohenschoenhausen];
+  const values = [sources.weather, sources.city, sources.hohenschoenhausen];
   const allowed = values.every(
-    (value) => typeof value === "string" && value.startsWith("http://host.docker.internal:8010/"),
+    (value) => typeof value === "string" && value.startsWith(FIXTURE_URL_PREFIX),
   );
   return allowed ? sources : null;
 }
 
-function productionSources(input) {
-  const customFields = input?.trmnl?.plugin_settings?.custom_fields_values || {};
-  const calendarId = String(
-    customFields.calendar_plugin_setting_id || DEFAULT_CALENDAR_PLUGIN_SETTING_ID,
-  ).trim();
-  const apiKey = String(customFields.trmnl_user_api_key || "").trim();
-  const calendar = /^\d+$/.test(calendarId) && apiKey
-    ? `https://trmnl.com/api/plugin_settings/${calendarId}/data`
-    : null;
-  return { calendar, ...PRODUCTION_SOURCES, apiKey };
+function calendarPayload(input) {
+  return input?.calendar_source || input?.[DEFAULT_CALENDAR_MERGE_KEY] || null;
 }
 
-async function fetchJson(url, headers, fetchImplementation) {
+async function fetchJson(url, fetchImplementation) {
   if (!url) {
     throw new Error("source is not configured");
   }
   const response = await fetchImplementation(url, {
-    headers,
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!response.ok) {
@@ -253,25 +245,31 @@ async function fetchJson(url, headers, fetchImplementation) {
 }
 
 async function run(input, fetchImplementation = fetch) {
-  const fixture = fixtureSources(input);
-  const sources = fixture || productionSources(input);
-  const now = fixture && input.fixture_now ? new Date(input.fixture_now) : new Date();
+  const fixtureUrl = input?.fixture_url;
+  if (fixtureUrl && (typeof fixtureUrl !== "string" || !fixtureUrl.startsWith(FIXTURE_URL_PREFIX))) {
+    throw new Error("invalid fixture url");
+  }
+  const runtimeInput = fixtureUrl ? await fetchJson(fixtureUrl, fetchImplementation) : input;
+  const fixture = fixtureSources(runtimeInput);
+  const sources = fixture || PRODUCTION_SOURCES;
+  const now = fixture && runtimeInput.fixture_now ? new Date(runtimeInput.fixture_now) : new Date();
   if (Number.isNaN(now.getTime())) {
     throw new Error("invalid fixture time");
   }
-  const calendarHeaders = fixture ? {} : { Authorization: `Bearer ${sources.apiKey}` };
   const requests = [
-    ["calendar", sources.calendar, calendarHeaders],
-    ["weather", sources.weather, {}],
-    ["city", sources.city, {}],
-    ["hohenschoenhausen", sources.hohenschoenhausen, {}],
+    ["weather", sources.weather],
+    ["city", sources.city],
+    ["hohenschoenhausen", sources.hohenschoenhausen],
   ];
   const settled = await Promise.allSettled(
-    requests.map(([, url, headers]) => fetchJson(url, headers, fetchImplementation)),
+    requests.map(([, url]) => fetchJson(url, fetchImplementation)),
   );
-  const payloads = Object.fromEntries(
-    requests.map(([name], index) => [name, settled[index].status === "fulfilled" ? settled[index].value : null]),
-  );
+  const payloads = {
+    calendar: calendarPayload(runtimeInput),
+    ...Object.fromEntries(
+      requests.map(([name], index) => [name, settled[index].status === "fulfilled" ? settled[index].value : null]),
+    ),
+  };
 
   let weather = null;
   let events = [];
@@ -320,10 +318,10 @@ async function run(input, fetchImplementation = fetch) {
 
 if (typeof module !== "undefined") {
   module.exports = {
+    calendarPayload,
     normalizeDepartures,
     normalizeEvents,
     normalizeWeather,
-    productionSources,
     run,
     weatherState,
   };
