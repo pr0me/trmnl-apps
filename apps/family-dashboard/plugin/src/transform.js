@@ -1,5 +1,4 @@
 const BERLIN_TIME_ZONE = "Europe/Berlin";
-const DEFAULT_CALENDAR_MERGE_KEY = "google_calendar_409973";
 const FIXTURE_URL_PREFIX = "http://host.docker.internal:8010/";
 const MAX_RESPONSE_BYTES = 250_000;
 const REQUEST_TIMEOUT_MS = 1_500;
@@ -126,11 +125,31 @@ function eventEndDay(event) {
   return typeof value === "string" ? value.slice(0, 10) : "";
 }
 
-function normalizeEvents(payload, now) {
-  const events = payload?.data?.events || payload?.events;
-  if (!Array.isArray(events)) {
+function calendarEvents(payload) {
+  const normalizedEvents = payload?.data?.events || payload?.events;
+  if (Array.isArray(normalizedEvents)) {
+    return normalizedEvents;
+  }
+  if (!Array.isArray(payload?.items)) {
     throw new Error("invalid calendar response");
   }
+
+  return payload.items
+    .filter((event) => event?.status !== "cancelled")
+    .map((event) => {
+      const start = event?.start?.dateTime || event?.start?.date;
+      const end = event?.end?.dateTime || event?.end?.date;
+      return {
+        summary: event?.summary,
+        start_full: start,
+        end_full: end,
+        all_day: typeof event?.start?.date === "string",
+      };
+    });
+}
+
+function normalizeEvents(payload, now) {
+  const events = calendarEvents(payload);
   const today = berlinDay(now);
 
   return events
@@ -220,7 +239,12 @@ function fixtureSources(input) {
 }
 
 function calendarPayload(input) {
-  return input?.calendar_source || input?.[DEFAULT_CALENDAR_MERGE_KEY] || null;
+  const candidates = [input?.calendar_source, input?.IDX_0, input?.data, input];
+  return candidates.find((candidate) => (
+    Array.isArray(candidate?.items)
+      || Array.isArray(candidate?.events)
+      || Array.isArray(candidate?.data?.events)
+  )) || null;
 }
 
 async function fetchJson(url, fetchImplementation) {
