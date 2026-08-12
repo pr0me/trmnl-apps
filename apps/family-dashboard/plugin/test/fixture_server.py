@@ -20,7 +20,6 @@ class FixtureHandler(BaseHTTPRequestHandler):
 
         parts = path.strip("/").split("/")
         if parts == ["seed"]:
-            source = "seed"
             variant = self.selected_variant
         elif len(parts) == 2:
             source, variant = parts
@@ -33,13 +32,14 @@ class FixtureHandler(BaseHTTPRequestHandler):
             return
 
         fixture = json.loads(fixture_path.read_text())
-        if source == "seed":
+        if parts == ["seed"]:
             base = "http://host.docker.internal:8010"
             payload = {
                 "fixture_now": fixture["now"],
+                "calendar_source": fixture["calendar"],
                 "fixture_sources": {
                     name: f"{base}/{name}/{variant}"
-                    for name in ("calendar", "weather", "city", "hohenschoenhausen")
+                    for name in ("weather", "city", "hohenschoenhausen")
                 },
             }
         elif source in fixture.get("errors", []):

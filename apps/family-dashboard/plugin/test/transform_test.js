@@ -4,10 +4,10 @@ const { join } = require("node:path");
 const { test } = require("node:test");
 
 const {
+  calendarPayload,
   normalizeDepartures,
   normalizeEvents,
   normalizeWeather,
-  productionSources,
   run,
   weatherState,
 } = require("../src/transform.js");
@@ -18,15 +18,12 @@ async function fixture(name) {
   return JSON.parse(await readFile(join(fixtureDirectory, `${name}.json`), "utf8"));
 }
 
-test("production calendar source defaults to the configured Familie instance", () => {
-  const sources = productionSources({
-    trmnl: {
-      plugin_settings: {
-        custom_fields_values: { trmnl_user_api_key: "test-key" },
-      },
-    },
-  });
-  assert.equal(sources.calendar, "https://trmnl.com/api/plugin_settings/409973/data");
+test("calendar payload uses the selected merge source with the configured instance as fallback", () => {
+  const selected = { events: [{ summary: "Selected" }] };
+  const fallback = { events: [{ summary: "Fallback" }] };
+  assert.equal(calendarPayload({ calendar_source: selected }), selected);
+  assert.equal(calendarPayload({ google_calendar_409973: fallback }), fallback);
+  assert.equal(calendarPayload({}), null);
 });
 
 test("weather codes map to stable glyph states", () => {
@@ -91,7 +88,8 @@ test("departures use realtime values, reject stale and cancelled entries, and ke
 
 test("run isolates source failures and never forwards raw source data", async () => {
   const input = await fixture("degraded");
-  const names = ["calendar", "weather", "city", "hohenschoenhausen"];
+  const names = ["weather", "city", "hohenschoenhausen"];
+  input.calendar_source = input.calendar;
   input.fixture_now = input.now;
   input.fixture_sources = Object.fromEntries(
     names.map((name) => [name, `http://host.docker.internal:8010/${name}/degraded`]),

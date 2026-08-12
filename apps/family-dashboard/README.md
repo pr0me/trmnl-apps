@@ -8,7 +8,7 @@ Open-Meteo ───────────────────────
 BVG transport.rest ────────────────────────────┘
 ```
 
-No separately hosted application or new GitHub Pages deployment is required. The plugin's Node serverless function performs four concurrent, bounded requests, normalizes the results, and returns only the view model needed by Liquid. The existing Berlin Times publisher remains independent.
+No separately hosted application or new GitHub Pages deployment is required. TRMNL supplies the merged calendar payload, while the plugin's Node serverless function performs three concurrent, bounded requests for weather and departures. It normalizes all four sources and returns only the view model needed by Liquid. The existing Berlin Times publisher remains independent.
 
 ## Product and layout contract
 
@@ -40,20 +40,19 @@ Shared root files such as `Cargo.toml` trigger Berlin Times CI because they affe
 
 ### Data ownership and authentication
 
-TRMNL's native Google Calendar integration remains the OAuth owner. This plugin reads that native instance through TRMNL's authenticated [data-only endpoint](https://docs.usetrmnl.com/go/private-api/fetch-plugin-content). The source calendar instance must stay on an active playlist but can be hidden; TRMNL documents that hidden state as the way to keep data-only sources refreshing without showing them.
+TRMNL's native Google Calendar integration remains the OAuth owner. The dashboard uses TRMNL's [Plugin Merge strategy](https://docs.trmnl.com/go/private-api/plugin-data), which supplies the selected native instance under the `calendar_source` merge variable. The source calendar instance must stay on an active playlist but can be hidden; Plugin Merge keeps its data available without showing the native screen.
 
-The Family Dashboard private plugin has two required custom fields:
+The Family Dashboard private plugin has one required custom field:
 
-- `calendar_plugin_setting_id`: integer from the hidden calendar instance URL, preconfigured as `409973`;
-- `trmnl_user_api_key`: user API key from the TRMNL Account page.
+- `calendar_source`: native Google Calendar instance configured only for the `Familie` calendar.
 
-The key is supplied to `https://trmnl.com/api/plugin_settings/<id>/data` only. It is never logged, checked in, sent to Open-Meteo or transport.rest, or returned in the serverless result. Calendar event titles necessarily pass through TRMNL because TRMNL both synchronizes and renders the plugin; do not use this design if that trust boundary is unacceptable.
+No TRMNL API key is required. Calendar event titles necessarily pass through TRMNL because TRMNL both synchronizes and renders the plugin; do not use this design if that trust boundary is unacceptable.
 
 ### Serverless runtime
 
-TRMNL Serverless provides Node with network access and currently documents a 128 MB / 5 second execution budget. The implementation uses no packages, runs all four requests concurrently, applies a 1.5 second timeout per request, caps each response at 250 KB, and avoids returning raw upstream payloads. Calendar, weather, and each direction fail independently. A panel shows a local unavailable state when one source fails; the run fails only when all four sources are unavailable.
+TRMNL Serverless provides Node with network access and currently documents a 128 MB / 5 second execution budget. The implementation uses no packages, runs the three network requests concurrently, applies a 1.5 second timeout per request, caps each response at 250 KB, and avoids returning raw upstream payloads. Calendar parsing, weather, and each direction fail independently. A panel shows a local unavailable state when one source fails; the run fails only when all four sources are unavailable.
 
-The `polling` strategy remains necessary to trigger serverless execution. Its production polling URL is TRMNL's small example JSON payload; the returned data is not used. Local `.trmnlp.yml` replaces this with the deterministic fixture server. Do not upload `.trmnlp.yml`: `trmnlp push` uploads the files under `src`, while the dotfile remains a local development override.
+The `plugin_merge` strategy is required so TRMNL continues refreshing the hidden calendar source and supplies its parsed events to Serverless. Local `.trmnlp.yml` points Serverless at the deterministic fixture server instead. Do not upload `.trmnlp.yml`: `trmnlp push` uploads the files under `src`, while the dotfile remains a local development override.
 
 ### Source limits
 
@@ -61,7 +60,7 @@ The `polling` strategy remains necessary to trigger serverless execution. Its pr
 - Departures use [`v6.bvg.transport.rest`](https://v6.bvg.transport.rest/), which exposes BVG realtime data without an API key and documents a limit of 100 requests per minute. The origin is `900150511`; direction filters are `900150510` toward Innenstadt and `900150512` toward Hohenschönhausen. Each request is tram-only, asks for six candidates in the next 60 minutes, drops cancelled or elapsed results, sorts by effective realtime `when` with `plannedWhen` fallback, and keeps two. The display uses absolute times because a 15-minute e-ink refresh makes countdowns misleading.
 - Google Calendar data comes from the configured native TRMNL instance. Use `Rolling Month`: the current official implementation fetches 30 days ahead and supports multi-day events. The dashboard can only select from events that native instance provides, so an unusually sparse calendar with fewer than five events in that horizon will show fewer than five. Ongoing all-day and multi-day events remain eligible; elapsed timed events do not.
 
-None of the unauthenticated upstream endpoints carries an availability SLA. At a 15-minute plugin refresh, the normal load is four serverless source requests per refresh, including two BVG requests—well below the published transport.rest limit for one household installation.
+None of the unauthenticated upstream endpoints carries an availability SLA. At a 15-minute plugin refresh, the normal load is three serverless source requests per refresh, including two BVG requests—well below the published transport.rest limit for one household installation.
 
 ## TRMNL account setup
 
@@ -72,9 +71,9 @@ None of the unauthenticated upstream endpoints carries an availability SLA. At a
 3. Select **Rolling Month**, **24 hrs**, timezone **Europe/Berlin**, include event time **Yes**, include past events **No**, and any event-status filter appropriate for the family.
 4. Save the instance. Its browser URL has the form `https://trmnl.com/plugin_settings/<integer>/edit`; for this installation the integer is `409973`.
 5. In **Playlists**, keep the calendar instance on the active device playlist but click its eye icon to hide it. Hidden is different from removing it: a removed source may stop refreshing.
-6. Force-refresh the calendar instance once. The authenticated `/api/plugin_settings/<integer>/data` response must contain `data.events` before configuring the dashboard.
+6. Force-refresh the calendar instance once. Its `google_calendar_<integer>` node must appear in the dashboard's Merge Variables after selecting Plugin Merge.
 
-The name `Familie` is enforced operationally by selecting only that calendar in the native instance. The data-only response identifies the selected calendar internally but does not provide a safe second authorization boundary for this plugin to discover and switch calendars.
+The name `Familie` is enforced operationally by selecting only that calendar in the native instance. Plugin Merge identifies the selected native instance but does not provide a safe second authorization boundary for this dashboard to switch the calendars configured inside it.
 
 ### 2. Push and configure the dashboard
 
@@ -101,7 +100,7 @@ docker run --rm -it \
 
 The first push creates the private plugin and writes its server-assigned `id` into `plugin/src/settings.yml`. Commit that ID: it is the stable identity that makes later pushes update this plugin rather than create another. It is not a secret. Never copy the Berlin Times ID into this file.
 
-In the new plugin's settings, confirm the prefilled calendar plugin setting ID is `409973`, enter the TRMNL user API key, enable **Debug Logs** while commissioning, save, and force-refresh. Confirm that all three panels contain live data and no credentials appear in returned variables or logs.
+In the plugin's settings, confirm the strategy is **Plugin Merge**, select the hidden `Familie` instance under **Calendar data source**, enable **Debug Logs** while commissioning, save, and force-refresh. Confirm that all three panels contain live data. The transform also recognizes `google_calendar_409973` as a deployment-specific fallback if the selector alias is temporarily absent.
 
 ### 3. Configure the device playlist
 
@@ -110,7 +109,7 @@ Keep exactly these visible full-screen items in the target device playlist:
 1. The Berlin Times
 2. Berlin Family Dashboard
 
-Keep the Google Calendar source hidden. Remove or hide the separate visible weather and public-transport plugins. Select landscape and 16 grayscale levels for the X. With two visible items, the device alternates between the newspaper and dashboard; how often the dashboard appears is the device playlist interval, while how fresh its source snapshot is depends on the plugin's 15-minute refresh interval and the upstream caches.
+Keep the Google Calendar source hidden. Remove or hide the separate visible weather and public-transport plugins. Select landscape and 16 grayscale levels for the X. With two visible items, the device alternates between the newspaper and dashboard; how often the dashboard appears is the device playlist interval, while calendar freshness depends on the source's playlist refresh schedule and upstream synchronization.
 
 ## Local development
 
@@ -159,15 +158,15 @@ docker run --rm \
 
 The assertion verifies X viewport geometry, the 54/46 columns, both vertical splits, fixture cardinalities, direction-label bounds, and page overflow. CI repeats it for normal, maximum-copy/winter, and partial-outage fixtures, verifies the device PNG is exactly 1872×1404 with at most 16 colors, and uploads both browser and device renders beside reviewed golden images.
 
-Local builds are intentionally fixture-only so tests never need account credentials. Validate live production data after pushing by enabling Serverless Debug Logs and using **Force Refresh** on the private plugin.
+Local builds are intentionally fixture-only so tests never need account credentials. The fixture payload uses the same `calendar_source` node that Plugin Merge supplies in production. Validate live production data after pushing by enabling Serverless Debug Logs and using **Force Refresh** on the private plugin.
 
 ## Failure behavior and troubleshooting
 
-- **Calendar unavailable:** confirm the native instance is hidden, not removed; force-refresh it; verify the integer ID and API key; re-authorize Google if the native plugin itself is degraded.
+- **Calendar unavailable:** confirm the dashboard uses Plugin Merge, the hidden `Familie` instance is selected as its calendar source, and the native instance remains on the active playlist; force-refresh it or re-authorize Google if the native plugin itself is degraded.
 - **Fewer than five events:** confirm only `Familie` is selected, use Rolling Month, disable ignored phrases that match desired events, and remember that the native integration currently supplies a 30-day horizon.
 - **Weather unavailable:** inspect Serverless Debug Logs for timeout, non-JSON, or schema errors. The fixed coordinates and requested fields live in `src/transform.js`.
 - **One BVG direction empty:** confirm the source API is reachable and direction IDs still resolve. A legitimately empty next-hour result displays `Keine Abfahrten`; a failed request displays `Derzeit nicht verfügbar`.
-- **Plugin degraded:** fix the source/configuration first, then use TRMNL's plugin-health reset control. Repeated polling failures can cause TRMNL to pause refreshes.
+- **Plugin degraded:** fix the source/configuration first, then use TRMNL's plugin-health reset control.
 - **Local build cannot reach fixtures:** ensure port 8010 is free, the fixture server is still running, and Docker can resolve `host.docker.internal`; add the host-gateway option on Linux.
 - **Push targets the wrong plugin:** stop before confirming overwrite and inspect the `id` in this app's `src/settings.yml` plus the mounted host configuration. Each app must retain its own ID.
 
