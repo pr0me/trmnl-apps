@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Duration, Utc};
 use url::Url;
@@ -63,6 +63,7 @@ pub fn validate_edition(edition: &ResearchEdition, now: DateTime<Utc>) -> Valida
     }
     validate_story_identity(edition, &mut report);
     validate_photo_candidates(edition, &mut report);
+    validate_provider_diversity(edition, &mut report);
     edition
         .stories
         .iter()
@@ -242,6 +243,32 @@ fn validate_photo_candidates(edition: &ResearchEdition, report: &mut ValidationR
         report
             .problems
             .push("photo candidates must rank every story exactly once".into());
+    }
+}
+
+fn validate_provider_diversity(edition: &ResearchEdition, report: &mut ValidationReport) {
+    if edition.stories.len() != 6 {
+        return;
+    }
+    let providers = edition.stories.iter().filter_map(|story| {
+        let [source] = story.sources.as_slice() else {
+            return None;
+        };
+        Some(source.name.as_str())
+    });
+    let mut counts = HashMap::<&str, usize>::new();
+    providers.for_each(|provider| {
+        *counts.entry(provider).or_default() += 1;
+    });
+    if counts
+        .values()
+        .copied()
+        .max()
+        .is_some_and(|count| count > 4)
+    {
+        report
+            .problems
+            .push("dominant source may supply at most four of six stories".into());
     }
 }
 
@@ -467,6 +494,29 @@ mod tests {
                     .any(|problem| problem.contains("publication time is in future"))
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_dominant_source_above_four_stories()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut research = fixture()?;
+        research
+            .stories
+            .iter_mut()
+            .take(5)
+            .enumerate()
+            .for_each(|(index, story)| {
+                story.sources = vec![crate::model::ResearchSource {
+                    name: "Reuters".into(),
+                    url: format!("https://www.reuters.com/world/europe/report-{index}"),
+                }];
+            });
+
+        let report = validate_edition(&research, now()?);
+        assert!(report.problems.iter().any(|problem| {
+            problem == "dominant source may supply at most four of six stories"
+        }));
         Ok(())
     }
 }
