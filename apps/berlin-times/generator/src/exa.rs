@@ -132,7 +132,7 @@ const SCIENCE_TERMS: &[&str] = &[
 
 const MORNING_QUERY: &str = "Most important international news in global politics OR global economics OR security OR consequential technology";
 const EVENING_QUERY: &str = "Today’s most important German and European news in politics OR economics OR security OR consequential technology";
-pub const SUMMARY_PROMPT: &str = "As your first line, output `Title: {english_title}\\n`, providing translations for German titles.\nSummarize the news article in 2 short English sentences / 35-52 words. Make the first sentence self-contained and no longer than 35 words.\nDeliver the gist. Write the summary as it would appear in a newspaper itself; do not use \"Summary:\", \"The article explains\" or alike.";
+pub const SUMMARY_PROMPT: &str = "As your first line, output `Title: {english_title}\\n`, providing translations for German titles.\nSummarize the news article in 2 short English sentences / 40-60 words. Make the first sentence self-contained and no longer than 35 words.\nDeliver the gist. Write the summary as it would appear in a newspaper itself; do not use \"Summary:\", \"The article explains\" or alike.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EditionProfile {
@@ -674,7 +674,7 @@ fn search_request<'a>(
         num_results: 10,
         include_domains,
         system_prompt: format!(
-            "Return up to 10 distinct individual news articles published inside the requested date range and grounded in exact article URLs from the allowed domains. Prefer {requested_sources} distinct sources when available, but return relevant articles when fewer are available. Avoid duplicate events and prefer consequential current reporting over analysis or opinion. Write every title and summary in English, translating German titles. Summaries must contain 2 short sentences and 35-52 words, must not repeat the title, and must not use labels such as `Title:` or `Summary:`."
+            "Return up to 10 distinct individual news articles published inside the requested date range and grounded in exact article URLs from the allowed domains. Prefer {requested_sources} distinct sources when available, but return relevant articles when fewer are available. Avoid duplicate events and prefer consequential current reporting over analysis or opinion. Write every title and summary in English, translating German titles. Summaries must contain 2 short sentences and 40-60 words, must not repeat the title, and must not use labels such as `Title:` or `Summary:`."
         ),
         start_published_date: window.start.to_rfc3339_opts(SecondsFormat::Millis, true),
         end_published_date: window
@@ -719,7 +719,7 @@ fn story_output_schema() -> Value {
                         },
                         "summary": {
                             "type": "string",
-                            "description": "Two short English sentences totaling 35-52 words without repeating the headline"
+                            "description": "Two short English sentences totaling 40-60 words without repeating the headline"
                         }
                     }
                 }
@@ -1179,7 +1179,7 @@ fn build_stories(selected: Vec<&Candidate>) -> Vec<ResearchStory> {
                 .unwrap_or(Category::World),
             is_developing: false,
             headline: candidate.title.clone(),
-            summary: fit_summary(&candidate.summary, 52),
+            summary: fit_summary(&candidate.summary, 60),
             published_at: candidate.published_at,
             sources: vec![ResearchSource {
                 name: candidate.provider.into(),
@@ -1322,33 +1322,23 @@ fn classify(url: &str, title: &str, summary: &str, provider: &str) -> Vec<Catego
 }
 
 pub(crate) fn fit_summary(summary: &str, limit: usize) -> String {
-    let sentences = leading_sentences(summary).collect::<Vec<_>>();
-    let first = sentences.first().copied().unwrap_or(summary).trim();
-    if word_count(first) > limit {
-        return format!(
-            "{}…",
-            first
-                .split_whitespace()
-                .take(limit)
-                .collect::<Vec<_>>()
-                .join(" ")
-                .trim_end_matches(|character: char| !character.is_alphanumeric())
-        );
-    }
-    sentences
-        .into_iter()
+    let complete = leading_sentences(summary)
         .map(str::trim)
-        .scan(0_usize, |words, sentence| {
-            let next = (*words).saturating_add(word_count(sentence));
-            if next > limit {
-                None
-            } else {
-                *words = next;
-                Some(sentence)
-            }
-        })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    if word_count(&complete) <= limit {
+        return complete;
+    }
+
+    format!(
+        "{}…",
+        complete
+            .split_whitespace()
+            .take(limit)
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim_end_matches(|character: char| !character.is_alphanumeric())
+    )
 }
 
 fn leading_sentences(value: &str) -> impl Iterator<Item = &str> {
@@ -2210,7 +2200,7 @@ mod tests {
         let summary = "Officials approved the extensive new plan for rail construction in Berlin and Brandenburg on Wednesday. Work starts Friday. Extra words follow here.";
         assert_eq!(
             fit_summary(summary, 18),
-            "Officials approved the extensive new plan for rail construction in Berlin and Brandenburg on Wednesday. Work starts Friday."
+            "Officials approved the extensive new plan for rail construction in Berlin and Brandenburg on Wednesday. Work starts Friday…"
         );
         assert!(fit_summary(summary, 8).ends_with('…'));
         assert_eq!(

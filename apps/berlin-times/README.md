@@ -73,7 +73,7 @@ The generator rejects an edition unless it has:
 - non-carried timestamps within the primary or explicit prior-day windows and no timestamp more than 30 minutes in the future;
 - credential-free HTTPS article URLs from the globally recognized provider union, with live results restricted to the active morning or evening profile;
 - English headlines, including translations requested from Exa for German titles;
-- summaries fitted by layout role to at most 41 lead words, 52 right-rail words, and 35 bottom-story words;
+- summaries requested from Exa at 40–60 words and fitted by layout role to at most 37 lead words, 52 right-rail words, and 35 bottom-story words;
 - exactly one correctly mapped publication source per story;
 - all five stories ranked exactly once for photographic suitability.
 
@@ -112,7 +112,7 @@ docker run --rm --entrypoint /usr/local/bin/ruby \
   trmnl/trmnlp:latest test/layout_test.rb
 ```
 
-It checks five unique articles, headlines, and justified summaries; three lower briefs; one lead-matched image occupying 10–18% of the screen; the 80/20 columns and 50/50 left rows; the loaded Fraktur masthead; X viewport, dateline, and story bounds; unclamped summaries of at least 34px; borderless story modules; and unclamped fixture copy. The assertion writes the browser's final 1872×1404 PNG after the layout reaches a stable state; the preceding `trmnlp build` separately verifies 4-bit device rendering. CI repeats this with short, typical, and maximum-budget copy and uploads each result beside its checked-in golden PNG for visual diff review. Golden files are updated intentionally after review, never by CI.
+It checks five unique articles, headlines, and justified summaries; three lower briefs; one lead-matched image occupying 10–18% of the screen; the 80/20 columns and 50/50 left rows; the loaded Fraktur masthead; X viewport, dateline, and story bounds; unclamped summaries of at least 35px; borderless story modules; and unclamped fixture copy. The assertion writes the browser's final 1872×1404 PNG after the layout reaches a stable state; the preceding `trmnlp build` separately verifies 4-bit device rendering. CI repeats this with short, typical, and maximum-budget copy and uploads each result beside its checked-in golden PNG for visual diff review. Golden files are updated intentionally after review, never by CI.
 
 ## GitHub setup
 

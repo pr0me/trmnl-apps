@@ -293,7 +293,7 @@ fn validate_copy(
     report: &mut ValidationReport,
 ) {
     let summary_words = word_count(&story.summary);
-    let maximum = if index == 0 { 69 } else { 52 };
+    let maximum = if index == 0 { 69 } else { 60 };
     if summary_words > maximum {
         report.problems.push(format!(
             "{prefix} summary has {summary_words} words; maximum is {maximum}"

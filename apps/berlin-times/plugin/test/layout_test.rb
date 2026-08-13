@@ -6,7 +6,7 @@ WIDTH = 1872
 HEIGHT = 1404
 MAX_PHOTO_AREA = 0.18
 MIN_PHOTO_AREA = 0.10
-MIN_SUMMARY_FONT_SIZE = 34
+MIN_SUMMARY_FONT_SIZE = 35
 
 options = Selenium::WebDriver::Firefox::Options.new
 options.add_argument('--headless')

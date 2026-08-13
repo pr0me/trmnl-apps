@@ -158,7 +158,7 @@ fn fit_layout_summaries(edition: &mut ResearchEdition) {
         .enumerate()
         .for_each(|(index, story)| {
             let limit = match index {
-                0 => 41,
+                0 => 37,
                 1 => 52,
                 _ => 35,
             };
@@ -475,7 +475,7 @@ mod tests {
         let mut edition = serde_json::from_str::<ResearchEdition>(include_str!(
             "../fixtures/valid-research.json"
         ))?;
-        let summary = (0..60).map(|_| "word").collect::<Vec<_>>().join(" ");
+        let summary = (0..70).map(|_| "word").collect::<Vec<_>>().join(" ");
         edition
             .stories
             .iter_mut()
@@ -496,7 +496,7 @@ mod tests {
                 .stories
                 .first()
                 .map(|story| story.summary.split_whitespace().count()),
-            Some(41)
+            Some(37)
         );
         assert_eq!(
             edition
