@@ -1,6 +1,6 @@
 {
   "now": "2026-11-03T06:30:00Z",
-  "errors": ["weather", "hohenschoenhausen"],
+  "errors": ["weather", "direction_b"],
   "calendar": {
     "data": {
       "events": [
@@ -12,7 +12,7 @@
           "all_day": false
         },
         {
-          "summary": "Geburtstag Oma",
+          "summary": "Geburtstagsfeier",
           "date_time": "2026-11-07",
           "start_full": "2026-11-07",
           "end_full": "2026-11-08",
@@ -22,7 +22,7 @@
     }
   },
   "weather": {},
-  "city": {
+  "direction_a": {
     "departures": [
       {
         "when": "2026-11-03T07:39:00+01:00",
@@ -33,6 +33,5 @@
       }
     ]
   },
-  "hohenschoenhausen": {}
+  "direction_b": {}
 }
-

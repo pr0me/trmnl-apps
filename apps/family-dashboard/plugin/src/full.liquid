@@ -56,7 +56,7 @@
       <section class="fd-events">
         <div class="fd-section-heading">
           <span>Nächste Termine</span>
-          <span class="fd-section-heading__minor">Familie</span>
+          <span class="fd-section-heading__minor">{{ labels.calendar | escape }}</span>
         </div>
         {% if source_status.calendar == "error" %}
           <div class="fd-empty">Kalender derzeit nicht verfügbar</div>
@@ -82,23 +82,24 @@
 
       <section class="fd-transit">
         <div class="fd-section-heading">
-          <span>Ab Simon-Bolivar-Str.</span>
+          <span>Ab {{ labels.stop | escape }}</span>
           <span class="fd-section-heading__minor">Tram</span>
         </div>
         <div class="fd-transit__body">
-          {% assign directions = "city,hohenschoenhausen" | split: "," %}
+          {% assign directions = "direction_a,direction_b" | split: "," %}
           {% for direction in directions %}
-            {% if direction == "city" %}
-              {% assign direction_label = "Innenstadt" %}
-              {% assign direction_departures = departures.city %}
-              {% assign direction_status = source_status.city %}
+            {% if direction == "direction_a" %}
+              {% assign direction_label = labels.direction_a %}
+              {% assign direction_departures = departures.direction_a %}
+              {% assign direction_status = source_status.direction_a %}
             {% else %}
-              {% assign direction_departures = departures.hohenschoenhausen %}
-              {% assign direction_status = source_status.hohenschoenhausen %}
+              {% assign direction_label = labels.direction_b %}
+              {% assign direction_departures = departures.direction_b %}
+              {% assign direction_status = source_status.direction_b %}
             {% endif %}
             <div class="fd-direction" data-direction="{{ direction | escape }}">
               <div class="fd-direction__heading">
-                {% if direction == "city" %}{{ direction_label | escape }}{% else %}<span>Hohen<br>schönhausen</span>{% endif %}
+                {{ direction_label | escape }}
               </div>
               {% if direction_status == "error" %}
                 <div class="fd-empty">Derzeit nicht verfügbar</div>

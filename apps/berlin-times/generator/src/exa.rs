@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fmt::Write as _,
     time::{Duration, SystemTime},
 };
@@ -27,6 +27,7 @@ use crate::{
 const MAX_ATTEMPTS: usize = 3;
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const REQUIRED_STORIES: usize = 6;
+const MAX_STORIES_PER_PROVIDER: usize = 4;
 const MAX_SELECTION_CANDIDATES: usize = 18;
 const GERMANY_TERMS: &[&str] = &[
     "berlin",
@@ -268,6 +269,13 @@ struct SelectionScore {
     ranks: Vec<(usize, usize)>,
 }
 
+#[derive(Clone, Copy)]
+struct SelectionTarget {
+    novel: usize,
+    carried: usize,
+    require_provider_split: bool,
+}
+
 impl ExaClient {
     pub fn new(http: reqwest::Client, api_base: &Url, api_key: impl Into<String>) -> Result<Self> {
         let api_key = api_key.into();
@@ -317,7 +325,7 @@ impl ExaClient {
         let mut responses = vec![initial];
         let mut current_domains = profile.domains.to_vec();
 
-        if candidates.len() < REQUIRED_STORIES {
+        if candidates.len() < REQUIRED_STORIES || select(&candidates, &[]).is_none() {
             current_domains = retry_domains(
                 profile.domains,
                 profile.domains,
@@ -342,8 +350,11 @@ impl ExaClient {
             responses.push(retry);
         }
 
-        let valid_carry_count = carry_candidates(previous, now, &candidates).len();
-        if candidates.is_empty() || candidates.len() + valid_carry_count < REQUIRED_STORIES {
+        let valid_carries = carry_candidates(previous, now, &candidates);
+        if candidates.is_empty()
+            || candidates.len() + valid_carries.len() < REQUIRED_STORIES
+            || select(&candidates, &valid_carries).is_none()
+        {
             let combined_results = responses
                 .iter()
                 .flat_map(|response| response.results.iter().cloned())
@@ -456,19 +467,23 @@ fn finalize_research(
         ));
     }
     order_and_limit_candidates(&mut candidates);
-    let selected = select(&candidates)
-        .ok_or_else(|| GeneratorError::Validation("could not select exa stories".into()))?;
-    let mut stories = build_stories(selected);
     let carried = carry_candidates(previous, now, &candidates);
-    let selected_novel = stories.len();
     let carried_count = carried.len();
-    if selected_novel + carried_count < REQUIRED_STORIES {
+    if candidates.len() + carried_count < REQUIRED_STORIES {
         return Err(GeneratorError::Validation(format!(
-            "only {selected_novel} novel and {carried_count} carried stories were usable; six are required"
+            "only {} novel and {carried_count} carried stories were usable; six are required",
+            candidates.len()
         )));
     }
-    let selected_carried = REQUIRED_STORIES.saturating_sub(selected_novel);
-    stories.extend(carried.into_iter().take(selected_carried));
+    let (selected, carried_selected) = select(&candidates, &carried).ok_or_else(|| {
+        GeneratorError::Validation(
+            "could not select six stories with at least two outside the dominant provider".into(),
+        )
+    })?;
+    let selected_novel = selected.len();
+    let selected_carried = carried_selected.len();
+    let mut stories = build_stories(selected);
+    stories.extend(carried_selected.into_iter().cloned());
     let research = ResearchEdition {
         photo_candidates: photo_candidates(&stories),
         stories,
@@ -486,7 +501,7 @@ fn search_request<'a>(
     SearchRequest {
         query: profile.query,
         category: "news",
-        search_type: "deep-reasoning",
+        search_type: "auto",
         num_results: 10,
         include_domains,
         system_prompt: format!(
@@ -769,40 +784,139 @@ fn log_selection(
     );
 }
 
-fn select(candidates: &[Candidate]) -> Option<Vec<&Candidate>> {
-    let target = REQUIRED_STORIES.min(candidates.len());
-    let mut best = None::<(SelectionScore, Vec<&Candidate>)>;
-    let mut current = Vec::with_capacity(target);
-    enumerate_subsets(candidates, target, 0, &mut current, &mut best);
-    best.map(|(_, candidates)| candidates)
+fn select<'a>(
+    candidates: &'a [Candidate],
+    carried: &'a [ResearchStory],
+) -> Option<(Vec<&'a Candidate>, Vec<&'a ResearchStory>)> {
+    let target = REQUIRED_STORIES.min(candidates.len() + carried.len());
+    let maximum_novel = target.min(candidates.len());
+    for novel_target in (1..=maximum_novel).rev() {
+        let carry_target = target.saturating_sub(novel_target);
+        if carry_target > carried.len() {
+            continue;
+        }
+        let mut best = None::<(SelectionScore, Vec<&'a Candidate>, Vec<&'a ResearchStory>)>;
+        let mut current = Vec::with_capacity(novel_target);
+        enumerate_novel_subsets(
+            candidates,
+            carried,
+            SelectionTarget {
+                novel: novel_target,
+                carried: carry_target,
+                require_provider_split: target == REQUIRED_STORIES,
+            },
+            0,
+            &mut current,
+            &mut best,
+        );
+        if let Some((_, novel, carried)) = best {
+            return Some((novel, carried));
+        }
+    }
+    None
 }
 
-fn enumerate_subsets<'a>(
+fn enumerate_novel_subsets<'a>(
     candidates: &'a [Candidate],
-    target: usize,
+    carried: &'a [ResearchStory],
+    target: SelectionTarget,
     start: usize,
     current: &mut Vec<&'a Candidate>,
-    best: &mut Option<(SelectionScore, Vec<&'a Candidate>)>,
+    best: &mut Option<(SelectionScore, Vec<&'a Candidate>, Vec<&'a ResearchStory>)>,
 ) {
-    if current.len() == target {
+    if current.len() == target.novel {
+        let Some(selected_carries) = select_carries(
+            current,
+            carried,
+            target.carried,
+            target.require_provider_split,
+        ) else {
+            return;
+        };
         let score = selection_score(current);
         if best
             .as_ref()
-            .is_none_or(|(best_score, _)| score.better_than(best_score))
+            .is_none_or(|(best_score, _, _)| score.better_than(best_score))
         {
-            *best = Some((score, current.clone()));
+            *best = Some((score, current.clone(), selected_carries));
         }
         return;
     }
-    let needed = target.saturating_sub(current.len());
+    let needed = target.novel.saturating_sub(current.len());
     if candidates.len().saturating_sub(start) < needed {
         return;
     }
     (start..candidates.len()).for_each(|index| {
         current.push(&candidates[index]);
-        enumerate_subsets(candidates, target, index + 1, current, best);
+        enumerate_novel_subsets(candidates, carried, target, index + 1, current, best);
         let _removed = current.pop();
     });
+}
+
+fn select_carries<'a>(
+    novel: &[&Candidate],
+    carried: &'a [ResearchStory],
+    target: usize,
+    require_provider_split: bool,
+) -> Option<Vec<&'a ResearchStory>> {
+    let mut current = Vec::with_capacity(target);
+    find_carry_subset(
+        novel,
+        carried,
+        target,
+        require_provider_split,
+        0,
+        &mut current,
+    )
+}
+
+fn find_carry_subset<'a>(
+    novel: &[&Candidate],
+    carried: &'a [ResearchStory],
+    target: usize,
+    require_provider_split: bool,
+    start: usize,
+    current: &mut Vec<&'a ResearchStory>,
+) -> Option<Vec<&'a ResearchStory>> {
+    if current.len() == target {
+        return (!require_provider_split || provider_split_allowed(novel, current))
+            .then(|| current.clone());
+    }
+    let needed = target.saturating_sub(current.len());
+    if carried.len().saturating_sub(start) < needed {
+        return None;
+    }
+    (start..carried.len()).find_map(|index| {
+        current.push(&carried[index]);
+        let selected = find_carry_subset(
+            novel,
+            carried,
+            target,
+            require_provider_split,
+            index + 1,
+            current,
+        );
+        let _removed = current.pop();
+        selected
+    })
+}
+
+fn provider_split_allowed(novel: &[&Candidate], carried: &[&ResearchStory]) -> bool {
+    let providers = novel.iter().map(|candidate| candidate.provider).chain(
+        carried
+            .iter()
+            .filter_map(|story| story.sources.first().map(|source| source.name.as_str())),
+    );
+    let mut counts = HashMap::<&str, usize>::new();
+    let mut total = 0_usize;
+    providers.for_each(|provider| {
+        *counts.entry(provider).or_default() += 1;
+        total += 1;
+    });
+    total == REQUIRED_STORIES
+        && counts
+            .values()
+            .all(|count| *count <= MAX_STORIES_PER_PROVIDER)
 }
 
 fn selection_score(candidates: &[&Candidate]) -> SelectionScore {
@@ -1282,7 +1396,7 @@ mod tests {
         response: &ExaResponse,
     ) -> std::result::Result<crate::model::ResearchEdition, Box<dyn std::error::Error>> {
         let candidates = normalized(&response.results)?;
-        let selected = select(&candidates).ok_or("not enough candidates")?;
+        let (selected, _) = select(&candidates, &[]).ok_or("not enough candidates")?;
         let stories = build_stories(selected);
         Ok(ResearchEdition {
             photo_candidates: photo_candidates(&stories),
@@ -1302,7 +1416,7 @@ mod tests {
         let body = serde_json::to_value(search_request(profile, window, profile.domains))?;
         assert_eq!(body["query"], MORNING_QUERY);
         assert_eq!(body["category"], "news");
-        assert_eq!(body["type"], "deep-reasoning");
+        assert_eq!(body["type"], "auto");
         assert_eq!(body["numResults"], 10);
         assert_eq!(
             body["includeDomains"],
@@ -1851,6 +1965,75 @@ mod tests {
         let mut response = fixture()?;
         response.results.truncate(5);
         assert_eq!(selected(&response)?.stories.len(), 5);
+        Ok(())
+    }
+
+    #[test]
+    fn selects_four_two_provider_split_across_novel_and_carried_stories()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let results = (0..5)
+            .map(|index| ExaResult {
+                title: format!("Reuters report {index}"),
+                url: format!("https://www.reuters.com/world/europe/report-{index}"),
+                published_date: Some("2026-08-05T01:00:00Z".into()),
+                image: None,
+                summary: Some(format!(
+                    "Reuters report {index} contains enough safe copy for deterministic selection."
+                )),
+            })
+            .collect::<Vec<_>>();
+        let profile = edition_profile(&EditionName::Morning);
+        let candidates = normalize(
+            &results,
+            publication_window(now()?, None)?,
+            profile.domains,
+            &HashSet::new(),
+            0,
+            true,
+        )
+        .candidates;
+        let previous = previous_edition(6)?;
+        let carried = carry_candidates(Some(&previous), now()?, &candidates);
+        let (novel, selected_carries) =
+            select(&candidates, &carried).ok_or("provider split was not selected")?;
+
+        assert_eq!(novel.len(), 4);
+        assert_eq!(selected_carries.len(), 2);
+        assert!(super::provider_split_allowed(&novel, &selected_carries));
+        assert!(
+            selected_carries
+                .iter()
+                .all(|story| story.sources[0].name != "Reuters")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_six_story_single_provider_selection()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let results = (0..6)
+            .map(|index| ExaResult {
+                title: format!("Reuters report {index}"),
+                url: format!("https://www.reuters.com/world/europe/report-{index}"),
+                published_date: Some("2026-08-05T01:00:00Z".into()),
+                image: None,
+                summary: Some(format!(
+                    "Reuters report {index} contains enough safe copy for deterministic selection."
+                )),
+            })
+            .collect::<Vec<_>>();
+        let profile = edition_profile(&EditionName::Morning);
+        let candidates = normalize(
+            &results,
+            publication_window(now()?, None)?,
+            profile.domains,
+            &HashSet::new(),
+            0,
+            true,
+        )
+        .candidates;
+
+        assert!(select(&candidates, &[]).is_none());
         Ok(())
     }
 

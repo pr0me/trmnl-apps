@@ -1,0 +1,11 @@
+[Unit]
+Description=Recover missing evening Berlin Times edition
+
+[Timer]
+OnCalendar=*-*-* 17:20:00 Europe/Berlin
+AccuracySec=1s
+Persistent=true
+Unit=berlin-times-recover@evening.service
+
+[Install]
+WantedBy=timers.target

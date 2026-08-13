@@ -8,6 +8,7 @@ const {
   normalizeDepartures,
   normalizeEvents,
   normalizeWeather,
+  productionConfiguration,
   run,
   weatherState,
 } = require("../src/transform.js");
@@ -67,7 +68,7 @@ test("Google Calendar events normalize timed and all-day entries", () => {
       },
       {
         status: "confirmed",
-        summary: "Familientag",
+        summary: "Ausflug",
         start: { date: "2026-08-09" },
         end: { date: "2026-08-10" },
       },
@@ -80,7 +81,7 @@ test("Google Calendar events normalize timed and all-day entries", () => {
     ],
   };
   const events = normalizeEvents(payload, new Date("2026-08-08T14:00:00Z"));
-  assert.deepEqual(events.map((event) => event.title), ["Abendessen", "Familientag"]);
+  assert.deepEqual(events.map((event) => event.title), ["Abendessen", "Ausflug"]);
   assert.equal(events[0].time, "18:30");
   assert.equal(events[1].time, "ganztägig");
 });
@@ -88,28 +89,28 @@ test("Google Calendar events normalize timed and all-day entries", () => {
 test("ongoing multi-day all-day events remain visible", async () => {
   const input = await fixture("maximum");
   const events = normalizeEvents(input.calendar, new Date(input.now));
-  assert.equal(events[0].title, "Mehr­tägiger Familienurlaub zwischen den Jahren");
+  assert.equal(events[0].title, "Mehr­tägige Winterreise zwischen den Jahren");
   assert.equal(events[0].date, "2026-12-28");
 });
 
 test("departures use realtime values, reject stale and cancelled entries, and keep two", async () => {
   const input = await fixture("typical");
-  input.city.departures.unshift({
+  input.direction_a.departures.unshift({
     when: "2026-08-08T15:59:00+02:00",
     plannedWhen: "2026-08-08T15:59:00+02:00",
     delay: 0,
     direction: "Schon weg",
     line: { name: "M5" },
   });
-  input.city.departures.unshift({
+  input.direction_a.departures.unshift({
     when: "2026-08-08T16:05:00+02:00",
     plannedWhen: "2026-08-08T16:05:00+02:00",
     cancelled: true,
     direction: "Fällt aus",
     line: { name: "18" },
   });
-  input.city.departures[3].delay = null;
-  const departures = normalizeDepartures(input.city, new Date(input.now));
+  input.direction_a.departures[3].delay = null;
+  const departures = normalizeDepartures(input.direction_a, new Date(input.now));
   assert.equal(departures.length, 2);
   assert.deepEqual(departures.map((departure) => departure.time), ["16:12", "16:26"]);
   assert.equal(departures[0].delay_minutes, 2);
@@ -119,7 +120,7 @@ test("departures use realtime values, reject stale and cancelled entries, and ke
 
 test("run isolates source failures and never forwards raw source data", async () => {
   const input = await fixture("degraded");
-  const names = ["weather", "city", "hohenschoenhausen"];
+  const names = ["weather", "direction_a", "direction_b"];
   input.calendar_source = input.calendar;
   input.fixture_now = input.now;
   input.fixture_sources = Object.fromEntries(
@@ -137,9 +138,28 @@ test("run isolates source failures and never forwards raw source data", async ()
   };
   const result = await run(input, fetchImplementation);
   assert.equal(result.source_status.weather, "error");
-  assert.equal(result.source_status.hohenschoenhausen, "error");
+  assert.equal(result.source_status.direction_b, "error");
   assert.equal(result.source_status.calendar, "ok");
   assert.equal(result.events.length, 2);
-  assert.equal(result.departures.city.length, 1);
+  assert.equal(result.departures.direction_a.length, 1);
   assert.equal("calendar" in result, false);
+});
+
+test("production sources use deployment settings without fixed household locations", () => {
+  const configuration = productionConfiguration({
+    weather_latitude: "52.5200",
+    weather_longitude: "13.4050",
+    transit_stop_id: "900000100003",
+    transit_direction_a_id: "900000100001",
+    transit_direction_b_id: "900000100002",
+    calendar_label: "Shared",
+    transit_stop_label: "Example stop",
+    transit_direction_a_label: "Direction A",
+    transit_direction_b_label: "Direction B",
+  });
+  assert.match(configuration.sources.weather, /latitude=52\.52&longitude=13\.405/);
+  assert.match(configuration.sources.direction_a, /stops\/900000100003\/departures/);
+  assert.match(configuration.sources.direction_a, /direction=900000100001/);
+  assert.equal(configuration.labels.stop, "Example stop");
+  assert.throws(() => productionConfiguration({}), /missing weather_latitude/);
 });

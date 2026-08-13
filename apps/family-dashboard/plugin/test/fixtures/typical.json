@@ -18,14 +18,14 @@
           "all_day": true
         },
         {
-          "summary": "Familienfrühstück",
+          "summary": "Gemeinsames Frühstück",
           "date_time": "2026-08-09T10:30:00+02:00",
           "start_full": "2026-08-09T10:30:00+02:00",
           "end_full": "2026-08-09T12:00:00+02:00",
           "all_day": false
         },
         {
-          "summary": "Zahnarzt mit Mila",
+          "summary": "Zahnarzttermin",
           "date_time": "2026-08-10T15:45:00+02:00",
           "start_full": "2026-08-10T15:45:00+02:00",
           "end_full": "2026-08-10T16:30:00+02:00",
@@ -39,7 +39,7 @@
           "all_day": false
         },
         {
-          "summary": "Oma und Opa besuchen",
+          "summary": "Verwandtschaft besuchen",
           "date_time": "2026-08-15T11:00:00+02:00",
           "start_full": "2026-08-15T11:00:00+02:00",
           "end_full": "2026-08-15T16:00:00+02:00",
@@ -66,7 +66,7 @@
       "temperature_2m_max": [23.3, 31.5, 27.2, 20.5]
     }
   },
-  "city": {
+  "direction_a": {
     "departures": [
       {
         "when": "2026-08-08T16:12:00+02:00",
@@ -91,13 +91,13 @@
       }
     ]
   },
-  "hohenschoenhausen": {
+  "direction_b": {
     "departures": [
       {
         "when": "2026-08-08T16:09:00+02:00",
         "plannedWhen": "2026-08-08T16:11:00+02:00",
         "delay": -120,
-        "direction": "Hohenschönhausen, Zingster Str.",
+        "direction": "Endhaltestelle Nord",
         "line": { "name": "M5" }
       },
       {
@@ -111,10 +111,9 @@
         "when": "2026-08-08T16:31:00+02:00",
         "plannedWhen": "2026-08-08T16:31:00+02:00",
         "delay": null,
-        "direction": "Hohenschönhausen, Zingster Str.",
+        "direction": "Endhaltestelle Nord",
         "line": { "name": "M5" }
       }
     ]
   }
 }
-

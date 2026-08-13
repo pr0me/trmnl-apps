@@ -6,8 +6,8 @@ WIDTH = 1872
 HEIGHT = 1404
 EXPECTED_WEATHER_DAYS = Integer(ENV.fetch('EXPECTED_WEATHER_DAYS', '3'))
 EXPECTED_EVENTS = Integer(ENV.fetch('EXPECTED_EVENTS', '5'))
-EXPECTED_CITY = Integer(ENV.fetch('EXPECTED_CITY', '2'))
-EXPECTED_HOHENSCHOENHAUSEN = Integer(ENV.fetch('EXPECTED_HOHENSCHOENHAUSEN', '2'))
+EXPECTED_DIRECTION_A = Integer(ENV.fetch('EXPECTED_DIRECTION_A', '2'))
+EXPECTED_DIRECTION_B = Integer(ENV.fetch('EXPECTED_DIRECTION_B', '2'))
 
 options = Selenium::WebDriver::Firefox::Options.new
 options.add_argument('--headless')
@@ -83,8 +83,8 @@ begin
       transit: box('.fd-transit'),
       weatherDays: document.querySelectorAll('.fd-day').length,
       eventsCount: document.querySelectorAll('.fd-event').length,
-      city: document.querySelectorAll('[data-direction="city"] .fd-departure').length,
-      hohenschoenhausen: document.querySelectorAll('[data-direction="hohenschoenhausen"] .fd-departure').length,
+      directionA: document.querySelectorAll('[data-direction="direction_a"] .fd-departure').length,
+      directionB: document.querySelectorAll('[data-direction="direction_b"] .fd-departure').length,
       directionHeadings,
       outside
     };
@@ -98,9 +98,9 @@ begin
   failures << "page height is #{result.dig('page', 'height')}" unless result.dig('page', 'height').to_f.round == HEIGHT - 20
   failures << "expected #{EXPECTED_WEATHER_DAYS} forecast days, received #{result['weatherDays']}" unless result['weatherDays'] == EXPECTED_WEATHER_DAYS
   failures << "expected #{EXPECTED_EVENTS} events, received #{result['eventsCount']}" unless result['eventsCount'] == EXPECTED_EVENTS
-  failures << "expected #{EXPECTED_CITY} city departures, received #{result['city']}" unless result['city'] == EXPECTED_CITY
-  unless result['hohenschoenhausen'] == EXPECTED_HOHENSCHOENHAUSEN
-    failures << "expected #{EXPECTED_HOHENSCHOENHAUSEN} Hohenschönhausen departures, received #{result['hohenschoenhausen']}"
+  failures << "expected #{EXPECTED_DIRECTION_A} first-direction departures, received #{result['directionA']}" unless result['directionA'] == EXPECTED_DIRECTION_A
+  unless result['directionB'] == EXPECTED_DIRECTION_B
+    failures << "expected #{EXPECTED_DIRECTION_B} second-direction departures, received #{result['directionB']}"
   end
 
   columns = result.dig('weather', 'width').to_f / (result.dig('weather', 'width').to_f + result.dig('right', 'width').to_f)
@@ -129,8 +129,8 @@ begin
     'layout valid: %d weather days, %d events, %d/%d departures',
     result['weatherDays'],
     result['eventsCount'],
-    result['city'],
-    result['hohenschoenhausen']
+    result['directionA'],
+    result['directionB']
   )
 ensure
   driver.quit

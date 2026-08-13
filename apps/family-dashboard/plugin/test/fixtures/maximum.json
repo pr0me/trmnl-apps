@@ -4,7 +4,7 @@
     "data": {
       "events": [
         {
-          "summary": "Mehr­tägiger Familienurlaub zwischen den Jahren",
+          "summary": "Mehr­tägige Winterreise zwischen den Jahren",
           "date_time": "2026-12-28",
           "start_full": "2026-12-28",
           "end_full": "2027-01-02",
@@ -25,7 +25,7 @@
           "all_day": false
         },
         {
-          "summary": "Neujahrsbrunch bei José, Björn, Łucja und Familie",
+          "summary": "Neujahrsbrunch mit Freundinnen, Freunden und Nachbarschaft",
           "date_time": "2027-01-01T11:30:00+01:00",
           "start_full": "2027-01-01T11:30:00+01:00",
           "end_full": "2027-01-01T15:00:00+01:00",
@@ -52,7 +52,7 @@
       "temperature_2m_max": [-9.8, -11.6, 12.7, 8.5]
     }
   },
-  "city": {
+  "direction_a": {
     "departures": [
       {
         "when": "2026-12-29T18:08:00+01:00",
@@ -70,13 +70,13 @@
       }
     ]
   },
-  "hohenschoenhausen": {
+  "direction_b": {
     "departures": [
       {
         "when": "2026-12-29T18:09:00+01:00",
         "plannedWhen": "2026-12-29T18:11:00+01:00",
         "delay": -120,
-        "direction": "Hohenschönhausen, Zingster Straße über Prerower Platz",
+        "direction": "Endhaltestelle Nord über Beispielplatz",
         "line": { "name": "M5" }
       },
       {
@@ -89,4 +89,3 @@
     ]
   }
 }
-

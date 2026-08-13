@@ -4,18 +4,22 @@ on:
   pull_request:
     paths:
       - .github/workflows/ci.yml
+      - .github/workflows/edition.yml
       - apps/berlin-times/**
       - Cargo.lock
       - Cargo.toml
+      - ops/berlin-times/**
       - rustfmt.toml
   push:
     branches:
       - main
     paths:
       - .github/workflows/ci.yml
+      - .github/workflows/edition.yml
       - apps/berlin-times/**
       - Cargo.lock
       - Cargo.toml
+      - ops/berlin-times/**
       - rustfmt.toml
 
 permissions:
@@ -42,11 +46,21 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --all-features --locked
 
+      - name: Test edition dispatcher
+        run: python3 -m unittest ops/berlin-times/test_dispatcher.py
+
+      - name: Validate edition timers
+        run: |
+          systemd-analyze calendar '*-*-* 06:00:00 Europe/Berlin' >/dev/null
+          systemd-analyze calendar '*-*-* 06:20:00 Europe/Berlin' >/dev/null
+          systemd-analyze calendar '*-*-* 17:00:00 Europe/Berlin' >/dev/null
+          systemd-analyze calendar '*-*-* 17:20:00 Europe/Berlin' >/dev/null
+
       - name: Generate fixture Pages artifact
         run: >-
           cargo run --locked --bin berlin-times -- generate
           --output _site
-          --public-base-url https://pr0me.github.io/trmnl-apps/
+          --public-base-url https://example.com/trmnl-apps/
           --fixture apps/berlin-times/generator/fixtures/valid-research.json
           --fixture-image apps/berlin-times/generator/fixtures/lead.ppm
           --at 2026-08-05T04:15:00Z
@@ -98,7 +112,7 @@ jobs:
         run: >-
           cargo run --locked --bin berlin-times -- generate
           --output _site
-          --public-base-url https://pr0me.github.io/trmnl-apps/
+          --public-base-url https://example.com/trmnl-apps/
           --fixture /tmp/berlin-times-research.json
           --fixture-image apps/berlin-times/generator/fixtures/lead.ppm
           --at 2026-08-05T04:15:00Z

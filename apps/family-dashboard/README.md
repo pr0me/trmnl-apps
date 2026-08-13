@@ -1,6 +1,6 @@
 # Berlin Family Dashboard
 
-Berlin Family Dashboard is a private, full-screen TRMNL X plugin for a two-item household playlist. It combines weather for Berlin 13055, the next five events from the shared Google calendar named `Familie`, and the next two tram departures in each direction from Simon-Bolivar-Straße.
+Berlin Family Dashboard is a private, full-screen TRMNL X plugin for a household playlist. It combines weather for configurable coordinates, the next five events from a selected Google calendar, and the next two tram departures in each of two configured directions.
 
 ```text
 Google Calendar API ────→ TRMNL OAuth polling ┐
@@ -20,7 +20,7 @@ The screen uses a high-contrast Berlin wayfinding-board visual language:
 - upper third of weather: today's condition glyph, current temperature, humidity, and daily maximum;
 - lower two thirds of weather: condition glyph and maximum temperature for each of the next three days;
 - 46% right column, upper 58%: five chronologically next events, regardless of week boundary;
-- right column, lower 42%: two non-interleaved departure boards labelled `Innenstadt` and `Hohenschönhausen`.
+- right column, lower 42%: two non-interleaved departure boards with deployment-configured labels.
 
 All labels and dates are German, times use 24-hour notation, and all date/time calculations use `Europe/Berlin`. Weather glyphs are inline SVG so the plugin has no font-icon or image dependency. Long event titles may use two lines and then truncate; departure destinations use a single ellipsized line so their absolute departure times stay dominant.
 
@@ -42,9 +42,7 @@ Shared root files such as `Cargo.toml` trigger Berlin Times CI because they affe
 
 The dashboard uses the Polling strategy because hosted Serverless transforms run on polled responses. It borrows TRMNL's Google Calendar OAuth app and sends the access token only in the Authorization header of the Google Events API request. The subsequent Serverless requests to Open-Meteo and BVG do not receive that header.
 
-The Family Dashboard private plugin has one required custom field:
-
-- `google_calendar_id`: the shared `Familie` calendar ID from Google Calendar's **Integrate calendar** settings.
+The Family Dashboard private plugin requires deployment-specific custom fields for the Google Calendar ID and heading, weather latitude and longitude, transit origin and two direction IDs, and the three visible transit labels. No household location, calendar name, account identifier, or private plugin ID is stored in the public repository.
 
 No TRMNL API key, Google client secret, or separately hosted service is required. Calendar event titles necessarily pass through TRMNL because TRMNL both fetches and renders the plugin; do not use this design if that trust boundary is unacceptable.
 
@@ -56,8 +54,8 @@ The `polling` strategy is required to invoke the hosted transform. Local `.trmnl
 
 ### Source limits
 
-- Weather uses [Open-Meteo's forecast API](https://open-meteo.com/en/docs) at fixed coordinates `52.54,13.50`, representing ZIP 13055. It requests current `temperature_2m` and `relative_humidity_2m`, plus four days of daily `weather_code` and `temperature_2m_max`. WMO codes collapse into the five stable display states sunny, partly cloudy, cloudy/fog, rain/thunderstorm, and snow. Open-Meteo requires attribution, which appears in the footer.
-- Departures use [`v6.bvg.transport.rest`](https://v6.bvg.transport.rest/), which exposes BVG realtime data without an API key and documents a limit of 100 requests per minute. The origin is `900150511`; direction filters are `900150510` toward Innenstadt and `900150512` toward Hohenschönhausen. Each request is tram-only, asks for six candidates in the next 60 minutes, drops cancelled or elapsed results, sorts by effective realtime `when` with `plannedWhen` fallback, and keeps two. The display uses absolute times because a 15-minute e-ink refresh makes countdowns misleading.
+- Weather uses [Open-Meteo's forecast API](https://open-meteo.com/en/docs) at coordinates supplied through private plugin settings. It requests current `temperature_2m` and `relative_humidity_2m`, plus four days of daily `weather_code` and `temperature_2m_max`. WMO codes collapse into the five stable display states sunny, partly cloudy, cloudy/fog, rain/thunderstorm, and snow. Open-Meteo requires attribution, which appears in the footer.
+- Departures use [`v6.bvg.transport.rest`](https://v6.bvg.transport.rest/), which exposes BVG realtime data without an API key and documents a limit of 100 requests per minute. Origin and direction stop identifiers come from private plugin settings. Each request is tram-only, asks for six candidates in the next 60 minutes, drops cancelled or elapsed results, sorts by effective realtime `when` with `plannedWhen` fallback, and keeps two. The display uses absolute times because a 15-minute e-ink refresh makes countdowns misleading.
 - Google Calendar uses the official [Events `list` endpoint](https://developers.google.com/workspace/calendar/api/v3/reference/events/list) with recurring events expanded, deleted events excluded, and results ordered by start time. Its dynamic `timeMin` is the current UTC time. Google applies this lower bound to event end times, so ongoing timed, all-day, and multi-day events remain eligible while elapsed events do not. The API page size is capped at 250 and the dashboard keeps the next five.
 
 None of the unauthenticated upstream endpoints carries an availability SLA. At a 15-minute plugin refresh, the normal load is three serverless source requests per refresh, including two BVG requests—well below the published transport.rest limit for one household installation.
@@ -67,7 +65,7 @@ None of the unauthenticated upstream endpoints carries an availability SLA. At a
 ### 1. Get the shared calendar ID
 
 1. Open Google Calendar in a browser.
-2. Open **Settings → Settings for my calendars → Familie → Integrate calendar**.
+2. Open **Settings → Settings for my calendars → selected calendar → Integrate calendar**.
 3. Copy **Calendar ID**. It is usually an email address or a value ending in `group.calendar.google.com`.
 
 ### 2. Push and configure the dashboard
@@ -93,16 +91,17 @@ docker run --rm -it \
   trmnl/trmnlp:latest push
 ```
 
-The first push creates the private plugin and writes its server-assigned `id` into `plugin/src/settings.yml`. Commit that ID: it is the stable identity that makes later pushes update this plugin rather than create another. It is not a secret. Never copy the Berlin Times ID into this file.
+The first push creates the private plugin and writes its server-assigned `id` into `plugin/src/settings.yml`. Keep that deployment identity only in the private checkout; do not commit it to a public repository. Never copy another plugin's ID into this file.
 
 After the push completes, open the plugin's settings and finish the live-only configuration:
 
 1. Confirm the strategy is **Polling**.
 2. Enable OAuth and choose **Use a TRMNL OAuth app → Google Calendar**.
-3. Connect the Google account that can read `Familie` and approve the requested calendar access.
+3. Connect the Google account that can read the selected calendar and approve the requested calendar access.
 4. Paste the copied value into **Google Calendar ID**.
-5. Enable **Debug Logs** while commissioning, save, and use **Force Refresh**.
-6. Confirm that weather, calendar, and both departure directions contain live data.
+5. Enter a short calendar heading, weather coordinates, the transport origin ID, both direction IDs, and their visible labels.
+6. Enable **Debug Logs** while commissioning, save, and use **Force Refresh**.
+7. Confirm that weather, calendar, and both departure directions contain live data.
 
 Configure OAuth only after the final `trmnlp push`; a later push of stale blank OAuth settings can replace the live provider selection. Pull the plugin before future settings edits so its current OAuth metadata round-trips locally. Tokens and OAuth client credentials are not stored in this repository.
 
@@ -153,8 +152,8 @@ docker run --rm \
   --env LAYOUT_URL=http://host.docker.internal:8010/__plugin__/full.html \
   --env EXPECTED_WEATHER_DAYS=3 \
   --env EXPECTED_EVENTS=5 \
-  --env EXPECTED_CITY=2 \
-  --env EXPECTED_HOHENSCHOENHAUSEN=2 \
+  --env EXPECTED_DIRECTION_A=2 \
+  --env EXPECTED_DIRECTION_B=2 \
   --entrypoint /usr/local/bin/ruby \
   --volume "$PWD/apps/family-dashboard/plugin:/plugin" \
   trmnl/trmnlp:latest test/layout_test.rb
@@ -167,8 +166,8 @@ Local builds are intentionally fixture-only so tests never need account credenti
 ## Failure behavior and troubleshooting
 
 - **Calendar unavailable:** confirm the dashboard uses Polling, OAuth shows a connected Google Calendar account, and **Google Calendar ID** is exact. Reconnect OAuth if the polling log reports 401/403; recheck the ID if it reports 404.
-- **Fewer than five events:** compare the `Familie` calendar directly and confirm the connected Google account can see its event details. The dashboard displays at most five ongoing or future events.
-- **Weather unavailable:** inspect Serverless Debug Logs for timeout, non-JSON, or schema errors. The fixed coordinates and requested fields live in `src/transform.js`.
+- **Fewer than five events:** compare the selected calendar directly and confirm the connected Google account can see its event details. The dashboard displays at most five ongoing or future events.
+- **Weather unavailable:** inspect Serverless Debug Logs for missing or invalid coordinates, timeout, non-JSON, or schema errors.
 - **One BVG direction empty:** confirm the source API is reachable and direction IDs still resolve. A legitimately empty next-hour result displays `Keine Abfahrten`; a failed request displays `Derzeit nicht verfügbar`.
 - **Plugin degraded:** fix the source/configuration first, then use TRMNL's plugin-health reset control.
 - **Local build cannot reach fixtures:** ensure port 8010 is free, the fixture server is still running, and Docker can resolve `host.docker.internal`; add the host-gateway option on Linux.
@@ -180,7 +179,7 @@ Before relying on the installation:
 
 - inspect all three CI renders and one physical 16-level X refresh;
 - confirm the current temperature differs from the daily maximum when expected;
-- compare all five event rows with the `Familie` calendar, including one all-day event;
+- compare all five event rows with the selected calendar, including one all-day event;
 - compare both departure groups with the BVG app and verify they are not interleaved;
 - simulate a source outage or inspect the degraded golden render;
 - observe at least one daylight-saving transition for calendar and departure times;

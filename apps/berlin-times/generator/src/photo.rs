@@ -450,7 +450,7 @@ fn http_client_builder() -> reqwest::ClientBuilder {
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(18))
-        .user_agent("berlin-times/0.1 (+https://pr0me.github.io/trmnl-apps/)")
+        .user_agent("berlin-times/0.1")
 }
 
 fn is_public_ip(address: IpAddr) -> bool {

@@ -43,18 +43,18 @@ jobs:
           - variant: typical
             weather_days: 3
             events: 5
-            city: 2
-            hohenschoenhausen: 2
+            direction_a: 2
+            direction_b: 2
           - variant: maximum
             weather_days: 3
             events: 5
-            city: 2
-            hohenschoenhausen: 2
+            direction_a: 2
+            direction_b: 2
           - variant: degraded
             weather_days: 0
             events: 2
-            city: 1
-            hohenschoenhausen: 0
+            direction_a: 1
+            direction_b: 0
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -89,16 +89,16 @@ jobs:
           LAYOUT_URL: http://host.docker.internal:8010/__plugin__/full.html
           EXPECTED_WEATHER_DAYS: ${{ matrix.weather_days }}
           EXPECTED_EVENTS: ${{ matrix.events }}
-          EXPECTED_CITY: ${{ matrix.city }}
-          EXPECTED_HOHENSCHOENHAUSEN: ${{ matrix.hohenschoenhausen }}
+          EXPECTED_DIRECTION_A: ${{ matrix.direction_a }}
+          EXPECTED_DIRECTION_B: ${{ matrix.direction_b }}
         run: >-
           docker run --rm
           --add-host=host.docker.internal:host-gateway
           -e LAYOUT_URL
           -e EXPECTED_WEATHER_DAYS
           -e EXPECTED_EVENTS
-          -e EXPECTED_CITY
-          -e EXPECTED_HOHENSCHOENHAUSEN
+          -e EXPECTED_DIRECTION_A
+          -e EXPECTED_DIRECTION_B
           --entrypoint /usr/local/bin/ruby
           -v "$PWD/apps/family-dashboard/plugin:/plugin"
           trmnl/trmnlp:latest test/layout_test.rb
