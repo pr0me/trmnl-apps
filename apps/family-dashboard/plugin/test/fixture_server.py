@@ -39,13 +39,13 @@ class FixtureHandler(BaseHTTPRequestHandler):
                 "calendar_source": fixture["calendar"],
                 "fixture_sources": {
                     name: f"{base}/{name}/{variant}"
-                    for name in ("weather", "city", "hohenschoenhausen")
+                    for name in ("weather", "direction_a", "direction_b")
                 },
             }
         elif source in fixture.get("errors", []):
             self.send_error(503)
             return
-        elif source in ("calendar", "weather", "city", "hohenschoenhausen"):
+        elif source in ("calendar", "weather", "direction_a", "direction_b"):
             payload = fixture[source]
         else:
             self.send_error(404)

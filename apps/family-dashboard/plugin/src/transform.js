@@ -2,15 +2,67 @@ const BERLIN_TIME_ZONE = "Europe/Berlin";
 const FIXTURE_URL_PREFIX = "http://host.docker.internal:8010/";
 const MAX_RESPONSE_BYTES = 250_000;
 const REQUEST_TIMEOUT_MS = 1_500;
-
-const PRODUCTION_SOURCES = {
-  weather:
-    "https://api.open-meteo.com/v1/forecast?latitude=52.54&longitude=13.50&current=temperature_2m,relative_humidity_2m&daily=weather_code,temperature_2m_max&timezone=Europe%2FBerlin&forecast_days=4",
-  city:
-    "https://v6.bvg.transport.rest/stops/900150511/departures?direction=900150510&results=6&duration=60&remarks=false&language=de&suburban=false&subway=false&tram=true&bus=false&ferry=false&express=false&regional=false",
-  hohenschoenhausen:
-    "https://v6.bvg.transport.rest/stops/900150511/departures?direction=900150512&results=6&duration=60&remarks=false&language=de&suburban=false&subway=false&tram=true&bus=false&ferry=false&express=false&regional=false",
+const FIXTURE_LABELS = {
+  calendar: "Kalender",
+  stop: "Beispielhaltestelle",
+  direction_a: "Richtung A",
+  direction_b: "Richtung B",
 };
+
+function requiredSetting(input, key) {
+  const value = input?.[key];
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error(`missing ${key}`);
+  }
+  return value.trim();
+}
+
+function coordinateSetting(input, key, minimum, maximum) {
+  const value = Number(requiredSetting(input, key));
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`invalid ${key}`);
+  }
+  return value;
+}
+
+function transitSetting(input, key) {
+  const value = requiredSetting(input, key);
+  if (!/^\d+$/.test(value)) {
+    throw new Error(`invalid ${key}`);
+  }
+  return value;
+}
+
+function labelSetting(input, key) {
+  const value = requiredSetting(input, key);
+  if (value.length > 48) {
+    throw new Error(`invalid ${key}`);
+  }
+  return value;
+}
+
+function transitSource(stop, direction) {
+  return `https://v6.bvg.transport.rest/stops/${stop}/departures?direction=${direction}&results=6&duration=60&remarks=false&language=de&suburban=false&subway=false&tram=true&bus=false&ferry=false&express=false&regional=false`;
+}
+
+function productionConfiguration(input) {
+  const latitude = coordinateSetting(input, "weather_latitude", -90, 90);
+  const longitude = coordinateSetting(input, "weather_longitude", -180, 180);
+  const stop = transitSetting(input, "transit_stop_id");
+  return {
+    sources: {
+      weather: `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,relative_humidity_2m&daily=weather_code,temperature_2m_max&timezone=Europe%2FBerlin&forecast_days=4`,
+      direction_a: transitSource(stop, transitSetting(input, "transit_direction_a_id")),
+      direction_b: transitSource(stop, transitSetting(input, "transit_direction_b_id")),
+    },
+    labels: {
+      calendar: labelSetting(input, "calendar_label"),
+      stop: labelSetting(input, "transit_stop_label"),
+      direction_a: labelSetting(input, "transit_direction_a_label"),
+      direction_b: labelSetting(input, "transit_direction_b_label"),
+    },
+  };
+}
 
 function finiteNumber(value, label) {
   const number = Number(value);
@@ -231,7 +283,7 @@ function fixtureSources(input) {
   if (!sources || typeof sources !== "object") {
     return null;
   }
-  const values = [sources.weather, sources.city, sources.hohenschoenhausen];
+  const values = [sources.weather, sources.direction_a, sources.direction_b];
   const allowed = values.every(
     (value) => typeof value === "string" && value.startsWith(FIXTURE_URL_PREFIX),
   );
@@ -275,15 +327,18 @@ async function run(input, fetchImplementation = fetch) {
   }
   const runtimeInput = fixtureUrl ? await fetchJson(fixtureUrl, fetchImplementation) : input;
   const fixture = fixtureSources(runtimeInput);
-  const sources = fixture || PRODUCTION_SOURCES;
+  const configuration = fixture
+    ? { sources: fixture, labels: FIXTURE_LABELS }
+    : productionConfiguration(runtimeInput);
+  const { labels, sources } = configuration;
   const now = fixture && runtimeInput.fixture_now ? new Date(runtimeInput.fixture_now) : new Date();
   if (Number.isNaN(now.getTime())) {
     throw new Error("invalid fixture time");
   }
   const requests = [
     ["weather", sources.weather],
-    ["city", sources.city],
-    ["hohenschoenhausen", sources.hohenschoenhausen],
+    ["direction_a", sources.direction_a],
+    ["direction_b", sources.direction_b],
   ];
   const settled = await Promise.allSettled(
     requests.map(([, url]) => fetchJson(url, fetchImplementation)),
@@ -297,12 +352,12 @@ async function run(input, fetchImplementation = fetch) {
 
   let weather = null;
   let events = [];
-  const departures = { city: [], hohenschoenhausen: [] };
+  const departures = { direction_a: [], direction_b: [] };
   const sourceStatus = {
     calendar: "error",
     weather: "error",
-    city: "error",
-    hohenschoenhausen: "error",
+    direction_a: "error",
+    direction_b: "error",
   };
 
   try {
@@ -317,7 +372,7 @@ async function run(input, fetchImplementation = fetch) {
   } catch (_error) {
     events = [];
   }
-  for (const direction of ["city", "hohenschoenhausen"]) {
+  for (const direction of ["direction_a", "direction_b"]) {
     try {
       departures[direction] = normalizeDepartures(payloads[direction], now);
       sourceStatus[direction] = departures[direction].length === 0 ? "empty" : "ok";
@@ -333,6 +388,7 @@ async function run(input, fetchImplementation = fetch) {
   return {
     generated_at: now.toISOString(),
     generated_time: timeLabel(now),
+    labels,
     weather,
     events,
     departures,
@@ -346,6 +402,7 @@ if (typeof module !== "undefined") {
     normalizeDepartures,
     normalizeEvents,
     normalizeWeather,
+    productionConfiguration,
     run,
     weatherState,
   };

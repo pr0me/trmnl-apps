@@ -3,7 +3,8 @@ watch:
   - .trmnlp.yml
   - src
 time_zone: Europe/Berlin
-custom_fields: {}
+custom_fields:
+  public_base_url: https://example.com/trmnl-apps/
 variables:
   stylesheet_url: http://host.docker.internal:8000/assets/berlin-times.css
   trmnl:

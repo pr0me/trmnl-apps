@@ -1,0 +1,11 @@
+[Unit]
+Description=Recover missing morning Berlin Times edition
+
+[Timer]
+OnCalendar=*-*-* 06:20:00 Europe/Berlin
+AccuracySec=1s
+Persistent=true
+Unit=berlin-times-recover@morning.service
+
+[Install]
+WantedBy=timers.target

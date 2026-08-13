@@ -3,9 +3,9 @@
 Private TRMNL plugins and their supporting generators, maintained in one repository with app-scoped builds, deployment paths, and GitHub Actions.
 
 - [The Berlin Times](apps/berlin-times/README.md) is a twice-daily news front page backed by a Rust generator and GitHub Pages.
-- [Berlin Family Dashboard](apps/family-dashboard/README.md) combines local weather, the shared `Familie` calendar, and departures from Simon-Bolivar-Straße in one serverless plugin.
+- [Berlin Family Dashboard](apps/family-dashboard/README.md) combines configurable local weather, a shared calendar, and two public-transport directions in one serverless plugin.
 
-Each app owns its code, plugin definition, fixtures, tests, generated output, and operational documentation beneath `apps/<app>`. The Berlin Times publication workflow remains the repository's only Pages deployer. Family Dashboard fetches its sources inside TRMNL Serverless and neither reads nor writes `_site`.
+Each app owns its code, plugin definition, fixtures, tests, and generated output beneath `apps/<app>`. Host-specific deployment bundles live beneath `ops/<app>`. The Berlin Times publication workflow remains the repository's only Pages deployer. Family Dashboard fetches its sources inside TRMNL Serverless and neither reads nor writes `_site`.
 
 ## Repository checks
 

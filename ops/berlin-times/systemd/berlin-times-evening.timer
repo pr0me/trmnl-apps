@@ -1,0 +1,11 @@
+[Unit]
+Description=Dispatch evening Berlin Times edition
+
+[Timer]
+OnCalendar=*-*-* 17:00:00 Europe/Berlin
+AccuracySec=1s
+Persistent=true
+Unit=berlin-times-dispatch@evening.service
+
+[Install]
+WantedBy=timers.target
