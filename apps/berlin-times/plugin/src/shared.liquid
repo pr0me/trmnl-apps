@@ -1,6 +1,7 @@
 {% assign bt_stylesheet_url = stylesheet_url %}
 {% if bt_stylesheet_url == blank %}
-  {% assign bt_stylesheet_url = public_base_url | append: "assets/berlin-times.css" %}
+  {% assign bt_lead_image_name = lead_image.url | split: "/" | last %}
+  {% assign bt_stylesheet_url = lead_image.url | replace: bt_lead_image_name, "berlin-times.css" %}
 {% endif %}
 {% assign bt_fraktur_url = bt_stylesheet_url | replace: "berlin-times.css", "fonts/UnifrakturCook-Bold.ttf" %}
 {% assign bt_serif_url = bt_stylesheet_url | replace: "berlin-times.css", "fonts/SourceSerif4-Variable.ttf" %}
