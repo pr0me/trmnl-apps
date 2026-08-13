@@ -55,9 +55,9 @@ impl ValidationReport {
 #[must_use]
 pub fn validate_edition(edition: &ResearchEdition, now: DateTime<Utc>) -> ValidationReport {
     let mut report = ValidationReport::default();
-    if edition.stories.len() != 4 {
+    if edition.stories.len() != 5 {
         report.problems.push(format!(
-            "expected exactly four stories, received {}",
+            "expected exactly five stories, received {}",
             edition.stories.len()
         ));
     }
@@ -253,7 +253,7 @@ fn validate_photo_candidates(edition: &ResearchEdition, report: &mut ValidationR
 }
 
 fn validate_provider_diversity(edition: &ResearchEdition, report: &mut ValidationReport) {
-    if edition.stories.len() != 4 {
+    if edition.stories.len() != 5 {
         return;
     }
     let providers = edition.stories.iter().filter_map(|story| {
@@ -274,7 +274,7 @@ fn validate_provider_diversity(edition: &ResearchEdition, report: &mut Validatio
     {
         report
             .problems
-            .push("dominant source may supply at most three of four stories".into());
+            .push("dominant source may supply at most three of five stories".into());
     }
 }
 
@@ -293,7 +293,7 @@ fn validate_copy(
     report: &mut ValidationReport,
 ) {
     let summary_words = word_count(&story.summary);
-    let maximum = if index == 0 { 60 } else { 45 };
+    let maximum = if index == 0 { 69 } else { 52 };
     if summary_words > maximum {
         report.problems.push(format!(
             "{prefix} summary has {summary_words} words; maximum is {maximum}"
@@ -523,7 +523,7 @@ mod tests {
         research
             .stories
             .iter_mut()
-            .take(4)
+            .take(5)
             .enumerate()
             .for_each(|(index, story)| {
                 story.sources = vec![crate::model::ResearchSource {
@@ -534,7 +534,7 @@ mod tests {
 
         let report = validate_edition(&research, now()?);
         assert!(report.problems.iter().any(|problem| {
-            problem == "dominant source may supply at most three of four stories"
+            problem == "dominant source may supply at most three of five stories"
         }));
         Ok(())
     }

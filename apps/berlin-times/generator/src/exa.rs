@@ -27,7 +27,7 @@ use crate::{
 
 const MAX_ATTEMPTS: usize = 3;
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
-const REQUIRED_STORIES: usize = 4;
+const REQUIRED_STORIES: usize = 5;
 const MAX_STORIES_PER_PROVIDER: usize = 3;
 const MAX_SELECTION_CANDIDATES: usize = 18;
 const GERMANY_TERMS: &[&str] = &[
@@ -132,7 +132,7 @@ const SCIENCE_TERMS: &[&str] = &[
 
 const MORNING_QUERY: &str = "Most important international news in global politics OR global economics OR security OR consequential technology";
 const EVENING_QUERY: &str = "Today’s most important German and European news in politics OR economics OR security OR consequential technology";
-pub const SUMMARY_PROMPT: &str = "As your first line, output `Title: {english_title}\\n`, providing translations for German titles.\nSummarize the news article in 2 short English sentences / 30-45 words. Make the first sentence self-contained and no longer than 30 words.\nDeliver the gist. Write the summary as it would appear in a newspaper itself; do not use \"Summary:\", \"The article explains\" or alike.";
+pub const SUMMARY_PROMPT: &str = "As your first line, output `Title: {english_title}\\n`, providing translations for German titles.\nSummarize the news article in 2 short English sentences / 35-52 words. Make the first sentence self-contained and no longer than 35 words.\nDeliver the gist. Write the summary as it would appear in a newspaper itself; do not use \"Summary:\", \"The article explains\" or alike.";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EditionProfile {
@@ -640,13 +640,13 @@ fn finalize_research(
     let carried_count = carried.len();
     if candidates.len() + carried_count < REQUIRED_STORIES {
         return Err(GeneratorError::Validation(format!(
-            "only {} novel and {carried_count} carried stories were usable; four are required",
+            "only {} novel and {carried_count} carried stories were usable; five are required",
             candidates.len()
         )));
     }
     let (selected, carried_selected) = select(&candidates, &carried).ok_or_else(|| {
         GeneratorError::Validation(
-            "could not select four stories from at least two providers".into(),
+            "could not select five stories from at least two providers".into(),
         )
     })?;
     let selected_novel = selected.len();
@@ -674,7 +674,7 @@ fn search_request<'a>(
         num_results: 10,
         include_domains,
         system_prompt: format!(
-            "Return up to 10 distinct individual news articles published inside the requested date range and grounded in exact article URLs from the allowed domains. Prefer {requested_sources} distinct sources when available, but return relevant articles when fewer are available. Avoid duplicate events and prefer consequential current reporting over analysis or opinion. Write every title and summary in English, translating German titles. Summaries must contain 2 short sentences and 30-45 words, must not repeat the title, and must not use labels such as `Title:` or `Summary:`."
+            "Return up to 10 distinct individual news articles published inside the requested date range and grounded in exact article URLs from the allowed domains. Prefer {requested_sources} distinct sources when available, but return relevant articles when fewer are available. Avoid duplicate events and prefer consequential current reporting over analysis or opinion. Write every title and summary in English, translating German titles. Summaries must contain 2 short sentences and 35-52 words, must not repeat the title, and must not use labels such as `Title:` or `Summary:`."
         ),
         start_published_date: window.start.to_rfc3339_opts(SecondsFormat::Millis, true),
         end_published_date: window
@@ -719,7 +719,7 @@ fn story_output_schema() -> Value {
                         },
                         "summary": {
                             "type": "string",
-                            "description": "Two short English sentences totaling 30-45 words without repeating the headline"
+                            "description": "Two short English sentences totaling 35-52 words without repeating the headline"
                         }
                     }
                 }
@@ -1179,7 +1179,7 @@ fn build_stories(selected: Vec<&Candidate>) -> Vec<ResearchStory> {
                 .unwrap_or(Category::World),
             is_developing: false,
             headline: candidate.title.clone(),
-            summary: fit_summary(&candidate.summary, 45),
+            summary: fit_summary(&candidate.summary, 52),
             published_at: candidate.published_at,
             sources: vec![ResearchSource {
                 name: candidate.provider.into(),
@@ -1798,7 +1798,7 @@ mod tests {
             .transpose()?
             .ok_or("contents request must be recorded")?;
         assert_eq!(body["maxAgeHours"], -1);
-        assert_eq!(body["urls"].as_array().map(Vec::len), Some(4));
+        assert_eq!(body["urls"].as_array().map(Vec::len), Some(5));
         Ok(())
     }
 
@@ -1914,7 +1914,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fills_two_novel_stories_with_four_deployed_stories()
+    async fn fills_two_novel_stories_with_deployed_stories()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1930,14 +1930,14 @@ mod tests {
         let expected_carry_ids = previous
             .stories
             .iter()
-            .take(2)
+            .take(3)
             .map(|story| story.id.clone())
             .collect::<Vec<_>>();
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
         let edition = client.research(now()?, Some(&previous)).await?;
 
-        assert_eq!(edition.stories.len(), 4);
+        assert_eq!(edition.stories.len(), 5);
         assert!(
             edition
                 .stories
@@ -2000,7 +2000,7 @@ mod tests {
         };
         assert_eq!(
             message,
-            "only 2 novel and 1 carried stories were usable; four are required"
+            "only 2 novel and 1 carried stories were usable; five are required"
         );
         Ok(())
     }
@@ -2249,11 +2249,11 @@ mod tests {
     }
 
     #[test]
-    fn selects_four_without_turning_preferences_into_blockers()
+    fn selects_five_without_turning_preferences_into_blockers()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let response = fixture()?;
         let edition = selected(&response)?;
-        assert_eq!(edition.stories.len(), 4);
+        assert_eq!(edition.stories.len(), 5);
         assert!(edition.stories.iter().all(|story| story.sources.len() == 1));
         assert!(edition.stories.iter().all(|story| !story.is_developing));
         assert!(
@@ -2262,7 +2262,7 @@ mod tests {
                 .iter()
                 .all(|story| !story.headline.is_empty())
         );
-        assert_eq!(edition.photo_candidates.len(), 4);
+        assert_eq!(edition.photo_candidates.len(), 5);
         assert_eq!(
             edition.photo_candidates.first(),
             edition
@@ -2275,7 +2275,7 @@ mod tests {
     }
 
     #[test]
-    fn selects_all_novel_when_fewer_than_four_survive()
+    fn selects_all_novel_when_fewer_than_five_survive()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut response = fixture()?;
         response.results.truncate(3);
@@ -2284,7 +2284,7 @@ mod tests {
     }
 
     #[test]
-    fn selects_three_one_provider_split_across_novel_and_carried_stories()
+    fn selects_three_two_provider_split_across_novel_and_carried_stories()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let results = (0..5)
             .map(|index| ExaResult {
@@ -2313,7 +2313,7 @@ mod tests {
             select(&candidates, &carried).ok_or("provider split was not selected")?;
 
         assert_eq!(novel.len(), 3);
-        assert_eq!(selected_carries.len(), 1);
+        assert_eq!(selected_carries.len(), 2);
         assert!(super::provider_split_allowed(&novel, &selected_carries));
         assert!(
             selected_carries
@@ -2324,9 +2324,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_four_story_single_provider_selection()
+    fn rejects_five_story_single_provider_selection()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let results = (0..4)
+        let results = (0..5)
             .map(|index| ExaResult {
                 title: format!("Reuters report {index}"),
                 url: format!("https://www.reuters.com/world/europe/report-{index}"),
@@ -2458,7 +2458,7 @@ mod tests {
                 .iter()
                 .all(|body| body["contents"]["maxAgeHours"] == 0)
         );
-        assert_eq!(edition.stories.len(), 4);
+        assert_eq!(edition.stories.len(), 5);
         Ok(())
     }
 
@@ -2484,7 +2484,7 @@ mod tests {
             .await
             .ok_or("request recording is disabled")?;
         assert_eq!(requests.len(), 1);
-        assert_eq!(edition.stories.len(), 4);
+        assert_eq!(edition.stories.len(), 5);
         Ok(())
     }
 
@@ -2534,7 +2534,7 @@ mod tests {
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
         let edition = client.research(now()?, None).await?;
-        assert_eq!(edition.stories.len(), 4);
+        assert_eq!(edition.stories.len(), 5);
         let requests = server
             .received_requests()
             .await

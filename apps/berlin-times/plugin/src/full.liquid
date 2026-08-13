@@ -2,6 +2,7 @@
 {% assign rail = stories[1] %}
 {% assign lower_one = stories[2] %}
 {% assign lower_two = stories[3] %}
+{% assign lower_three = stories[4] %}
 
 <div class="bt" lang="en">
   <header class="bt-masthead">
@@ -12,7 +13,7 @@
 
   <div class="bt-dateline">
     <span>{{ display_date | escape }}</span>
-    <span>Four essential stories · English edition</span>
+    <span>Five essential stories · English edition</span>
     <span>Next edition {{ next_scheduled_at | date: "%H:%M" }} Berlin</span>
   </div>
 
@@ -46,6 +47,13 @@
           <h2 class="bt-headline">{{ lower_two.headline | escape }}</h2>
           <p class="bt-summary">{{ lower_two.summary | escape }}</p>
           <p class="bt-byline">{{ lower_two.sources | map: "name" | join: " · " | escape }} · {{ lower_two.published_at | date: "%H:%M UTC" }}</p>
+        </article>
+
+        <article class="bt-story bt-story--brief" data-story-id="{{ lower_three.id | escape }}">
+          <p class="bt-kicker{% if lower_three.is_developing %} bt-kicker__developing{% endif %}">{{ lower_three.primary_category | replace: "_", " " | escape }}</p>
+          <h2 class="bt-headline">{{ lower_three.headline | escape }}</h2>
+          <p class="bt-summary">{{ lower_three.summary | escape }}</p>
+          <p class="bt-byline">{{ lower_three.sources | map: "name" | join: " · " | escape }} · {{ lower_three.published_at | date: "%H:%M UTC" }}</p>
         </article>
       </div>
     </div>

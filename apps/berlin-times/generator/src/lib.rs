@@ -158,9 +158,9 @@ fn fit_layout_summaries(edition: &mut ResearchEdition) {
         .enumerate()
         .for_each(|(index, story)| {
             let limit = match index {
-                0 => 36,
-                1 => 45,
-                _ => 30,
+                0 => 41,
+                1 => 52,
+                _ => 35,
             };
             story.summary = fit_summary(&story.summary, limit);
         });
@@ -222,9 +222,9 @@ fn arrange_layout_stories(
     let rail = rail.ok_or_else(|| {
         GeneratorError::Validation("right rail does not match a selected story".into())
     })?;
-    if supporting.len() != 2 {
+    if supporting.len() != 3 {
         return Err(GeneratorError::Validation(
-            "layout requires exactly two supporting stories".into(),
+            "layout requires exactly three supporting stories".into(),
         ));
     }
 
@@ -374,7 +374,7 @@ mod tests {
         let published = serde_json::from_slice::<EditionV1>(
             &tokio::fs::read(output.join("edition.json")).await?,
         )?;
-        assert_eq!(edition.stories.len(), 4);
+        assert_eq!(edition.stories.len(), 5);
         assert_eq!(
             edition.stories.first().map(|story| &story.id),
             Some(&lead_id)
@@ -410,6 +410,7 @@ mod tests {
         assert_eq!(edition.stories[1].id, rail_id);
         assert_eq!(edition.stories[2].id, original_ids[2]);
         assert_eq!(edition.stories[3].id, original_ids[3]);
+        assert_eq!(edition.stories[4].id, original_ids[4]);
         assert!(!edition.stories[0].is_carried);
         Ok(())
     }
@@ -474,7 +475,7 @@ mod tests {
         let mut edition = serde_json::from_str::<ResearchEdition>(include_str!(
             "../fixtures/valid-research.json"
         ))?;
-        let summary = (0..40).map(|_| "word").collect::<Vec<_>>().join(" ");
+        let summary = (0..60).map(|_| "word").collect::<Vec<_>>().join(" ");
         edition
             .stories
             .iter_mut()
@@ -495,21 +496,21 @@ mod tests {
                 .stories
                 .first()
                 .map(|story| story.summary.split_whitespace().count()),
-            Some(36)
+            Some(41)
         );
         assert_eq!(
             edition
                 .stories
                 .get(1)
                 .map(|story| story.summary.split_whitespace().count()),
-            Some(40)
+            Some(52)
         );
         assert!(
             edition
                 .stories
                 .iter()
                 .skip(2)
-                .all(|story| { story.summary.split_whitespace().count() == 30 })
+                .all(|story| { story.summary.split_whitespace().count() == 35 })
         );
         Ok(())
     }

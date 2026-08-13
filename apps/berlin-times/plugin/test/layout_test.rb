@@ -175,10 +175,10 @@ begin
 
   failures = []
   failures << "plugin layout did not reach a stable state" unless layout_ready
-  failures << "expected four articles, received #{result['articles']}" unless result['articles'] == 4
-  failures << "expected four headlines, received #{result['headlines']}" unless result['headlines'] == 4
-  failures << "expected four summaries, received #{result['summaries']}" unless result['summaries'] == 4
-  failures << "story ids are not unique" unless result['uniqueStories'] == 4
+  failures << "expected five articles, received #{result['articles']}" unless result['articles'] == 5
+  failures << "expected five headlines, received #{result['headlines']}" unless result['headlines'] == 5
+  failures << "expected five summaries, received #{result['summaries']}" unless result['summaries'] == 5
+  failures << "story ids are not unique" unless result['uniqueStories'] == 5
   failures << "expected one visible image, received #{result['visibleImages']}" unless result['visibleImages'] == 1
   unless result['caption']&.start_with?('Photograph: ')
     failures << "unexpected photo caption: #{result['caption'].inspect}"
@@ -186,7 +186,7 @@ begin
   unless result['leadStoryId'] == result['photoStoryId']
     failures << "lead #{result['leadStoryId']} does not match photo #{result['photoStoryId']}"
   end
-  failures << "expected two bottom stories" unless result['bottomStories'] == 2
+  failures << "expected three bottom stories" unless result['bottomStories'] == 3
   if result['photoArea'].to_f < MIN_PHOTO_AREA
     failures << format('photo occupies only %.2f%% of screen', result['photoArea'].to_f * 100)
   end
@@ -196,7 +196,7 @@ begin
   unless (result['columnRatio'].to_f - 0.80).abs <= 0.01
     failures << format('left column ratio is %.3f', result['columnRatio'].to_f)
   end
-  unless (result['upperRowRatio'].to_f - 0.60).abs <= 0.01
+  unless (result['upperRowRatio'].to_f - 0.50).abs <= 0.01
     failures << format('upper row ratio is %.3f', result['upperRowRatio'].to_f)
   end
   failures << "screen width is #{result['screenWidth']}" unless result['screenWidth'].round == WIDTH
@@ -212,7 +212,7 @@ begin
   if result['minimumSummaryFontSize'].to_f < MIN_SUMMARY_FONT_SIZE
     failures << "minimum summary font size is #{result['minimumSummaryFontSize']}"
   end
-  unless result['justifiedSummaries'] == 4
+  unless result['justifiedSummaries'] == 5
     failures << "only #{result['justifiedSummaries']} summaries are justified"
   end
   unless result['mastheadFontFamily'].to_s.include?('Berlin Fraktur') && result['frakturLoaded']
@@ -240,7 +240,7 @@ begin
   driver.execute_script('window.scrollTo(0, 0)')
   driver.save_screenshot(output)
   File.chmod(0o644, output)
-  puts format('layout valid: four stories, one image, %.2f%% photo area', result['photoArea'].to_f * 100)
+  puts format('layout valid: five stories, one image, %.2f%% photo area', result['photoArea'].to_f * 100)
 ensure
   driver.quit
 end
