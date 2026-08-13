@@ -1,12 +1,9 @@
 {% assign lead = stories[0] %}
-{% assign secondary_one = stories[1] %}
-{% assign secondary_two = stories[2] %}
-{% assign rail_one = stories[3] %}
-{% assign rail_two = stories[4] %}
-{% assign rail_three = stories[5] %}
-{% assign photo_story = stories | where: "id", lead_image.story_id | first %}
+{% assign rail = stories[1] %}
+{% assign lower_one = stories[2] %}
+{% assign lower_two = stories[3] %}
 
-<div class="bt">
+<div class="bt" lang="en">
   <header class="bt-masthead">
     <div class="bt-masthead__side">No. {{ edition_id | slice: 0, 8 | escape }}</div>
     <h1 class="bt-masthead__name">The Berlin Times</h1>
@@ -15,63 +12,50 @@
 
   <div class="bt-dateline">
     <span>{{ display_date | escape }}</span>
-    <span>Six essential stories · English edition</span>
+    <span>Four essential stories · English edition</span>
     <span>Next edition {{ next_scheduled_at | date: "%H:%M" }} Berlin</span>
   </div>
 
   <main class="bt-page">
-    <div class="bt-column bt-column--lead">
+    <div class="bt-left">
       <article class="bt-story bt-story--lead" data-story-id="{{ lead.id | escape }}">
         <p class="bt-kicker{% if lead.is_developing %} bt-kicker__developing{% endif %}">{{ lead.primary_category | replace: "_", " " | escape }}</p>
         <h2 class="bt-headline">{{ lead.headline | escape }}</h2>
-        <p class="bt-summary">{{ lead.summary | escape }}</p>
-        <p class="bt-byline">{{ lead.sources | map: "name" | join: " · " | escape }} · {{ lead.published_at | date: "%H:%M UTC" }}</p>
+        <div class="bt-lead__body">
+          <figure class="bt-photo" data-photo-story-id="{{ lead_image.story_id | escape }}">
+            <img class="image image--cover" src="{{ bt_lead_image_url | escape }}" alt="{{ lead_image.alt | escape }}">
+            <figcaption class="bt-caption">Photograph: {{ lead_image.credit | escape }}</figcaption>
+          </figure>
+          <div class="bt-lead__copy">
+            <p class="bt-summary">{{ lead.summary | escape }}</p>
+            <p class="bt-byline">{{ lead.sources | map: "name" | join: " · " | escape }} · {{ lead.published_at | date: "%H:%M UTC" }}</p>
+          </div>
+        </div>
       </article>
 
-      <article class="bt-story bt-story--standard" data-story-id="{{ secondary_one.id | escape }}">
-        <p class="bt-kicker{% if secondary_one.is_developing %} bt-kicker__developing{% endif %}">{{ secondary_one.primary_category | replace: "_", " " | escape }}</p>
-        <h2 class="bt-headline">{{ secondary_one.headline | escape }}</h2>
-        <p class="bt-summary">{{ secondary_one.summary | escape }}</p>
-        <p class="bt-byline">{{ secondary_one.sources | map: "name" | join: " · " | escape }} · {{ secondary_one.published_at | date: "%H:%M UTC" }}</p>
-      </article>
+      <div class="bt-lower">
+        <article class="bt-story bt-story--brief" data-story-id="{{ lower_one.id | escape }}">
+          <p class="bt-kicker{% if lower_one.is_developing %} bt-kicker__developing{% endif %}">{{ lower_one.primary_category | replace: "_", " " | escape }}</p>
+          <h2 class="bt-headline">{{ lower_one.headline | escape }}</h2>
+          <p class="bt-summary">{{ lower_one.summary | escape }}</p>
+          <p class="bt-byline">{{ lower_one.sources | map: "name" | join: " · " | escape }} · {{ lower_one.published_at | date: "%H:%M UTC" }}</p>
+        </article>
+
+        <article class="bt-story bt-story--brief" data-story-id="{{ lower_two.id | escape }}">
+          <p class="bt-kicker{% if lower_two.is_developing %} bt-kicker__developing{% endif %}">{{ lower_two.primary_category | replace: "_", " " | escape }}</p>
+          <h2 class="bt-headline">{{ lower_two.headline | escape }}</h2>
+          <p class="bt-summary">{{ lower_two.summary | escape }}</p>
+          <p class="bt-byline">{{ lower_two.sources | map: "name" | join: " · " | escape }} · {{ lower_two.published_at | date: "%H:%M UTC" }}</p>
+        </article>
+      </div>
     </div>
 
-    <div class="bt-column bt-column--visual">
-      <figure class="bt-photo">
-        <img class="image image--cover" src="{{ bt_lead_image_url | escape }}" alt="{{ lead_image.alt | escape }}">
-        <figcaption class="bt-caption">Photograph: {{ lead_image.credit | escape }}{% if photo_story.id != lead.id %} · {{ photo_story.headline | escape }}{% endif %}</figcaption>
-      </figure>
-
-      <article class="bt-story bt-story--compact" data-story-id="{{ secondary_two.id | escape }}">
-        <p class="bt-kicker{% if secondary_two.is_developing %} bt-kicker__developing{% endif %}">{{ secondary_two.primary_category | replace: "_", " " | escape }}</p>
-        <h2 class="bt-headline">{{ secondary_two.headline | escape }}</h2>
-        <p class="bt-summary">{{ secondary_two.summary | escape }}</p>
-        <p class="bt-byline">{{ secondary_two.sources | map: "name" | join: " · " | escape }} · {{ secondary_two.published_at | date: "%H:%M UTC" }}</p>
-      </article>
-
-      <article class="bt-story bt-story--compact" data-story-id="{{ rail_one.id | escape }}">
-        <p class="bt-kicker{% if rail_one.is_developing %} bt-kicker__developing{% endif %}">{{ rail_one.primary_category | replace: "_", " " | escape }}</p>
-        <h2 class="bt-headline">{{ rail_one.headline | escape }}</h2>
-        <p class="bt-summary">{{ rail_one.summary | escape }}</p>
-        <p class="bt-byline">{{ rail_one.sources | map: "name" | join: " · " | escape }} · {{ rail_one.published_at | date: "%H:%M UTC" }}</p>
-      </article>
-    </div>
-
-    <div class="bt-column bt-column--briefs">
-      <article class="bt-story bt-story--prominent" data-story-id="{{ rail_two.id | escape }}">
-        <p class="bt-kicker{% if rail_two.is_developing %} bt-kicker__developing{% endif %}">{{ rail_two.primary_category | replace: "_", " " | escape }}</p>
-        <h2 class="bt-headline">{{ rail_two.headline | escape }}</h2>
-        <p class="bt-summary">{{ rail_two.summary | escape }}</p>
-        <p class="bt-byline">{{ rail_two.sources | map: "name" | join: " · " | escape }} · {{ rail_two.published_at | date: "%H:%M UTC" }}</p>
-      </article>
-
-      <article class="bt-story bt-story--prominent" data-story-id="{{ rail_three.id | escape }}">
-        <p class="bt-kicker{% if rail_three.is_developing %} bt-kicker__developing{% endif %}">{{ rail_three.primary_category | replace: "_", " " | escape }}</p>
-        <h2 class="bt-headline">{{ rail_three.headline | escape }}</h2>
-        <p class="bt-summary">{{ rail_three.summary | escape }}</p>
-        <p class="bt-byline">{{ rail_three.sources | map: "name" | join: " · " | escape }} · {{ rail_three.published_at | date: "%H:%M UTC" }}</p>
-      </article>
-    </div>
+    <article class="bt-story bt-story--rail" data-story-id="{{ rail.id | escape }}">
+      <p class="bt-kicker{% if rail.is_developing %} bt-kicker__developing{% endif %}">{{ rail.primary_category | replace: "_", " " | escape }}</p>
+      <h2 class="bt-headline">{{ rail.headline | escape }}</h2>
+      <p class="bt-summary">{{ rail.summary | escape }}</p>
+      <p class="bt-byline">{{ rail.sources | map: "name" | join: " · " | escape }} · {{ rail.published_at | date: "%H:%M UTC" }}</p>
+    </article>
   </main>
 </div>
 

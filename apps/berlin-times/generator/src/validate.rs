@@ -12,8 +12,13 @@ use crate::{
 const TRACKING_PARAMETERS: &[&str] = &["fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"];
 
 pub(crate) const MORNING_DOMAINS: &[&str] = &["wsj.com", "nytimes.com", "ft.com", "reuters.com"];
-pub(crate) const EVENING_DOMAINS: &[&str] =
-    &["handelsblatt.com", "tagesschau.de", "ft.com", "dw.com"];
+pub(crate) const EVENING_DOMAINS: &[&str] = &[
+    "handelsblatt.com",
+    "tagesschau.de",
+    "ft.com",
+    "dw.com",
+    "bbc.com",
+];
 
 pub(crate) fn domains_for_edition(edition: &EditionName) -> &'static [&'static str] {
     match edition {
@@ -50,9 +55,9 @@ impl ValidationReport {
 #[must_use]
 pub fn validate_edition(edition: &ResearchEdition, now: DateTime<Utc>) -> ValidationReport {
     let mut report = ValidationReport::default();
-    if edition.stories.len() != 6 {
+    if edition.stories.len() != 4 {
         report.problems.push(format!(
-            "expected exactly six stories, received {}",
+            "expected exactly four stories, received {}",
             edition.stories.len()
         ));
     }
@@ -193,6 +198,7 @@ const PROVIDERS: &[(&str, &str)] = &[
     ("wsj.com", "The Wall Street Journal"),
     ("handelsblatt.com", "Handelsblatt"),
     ("dw.com", "DW"),
+    ("bbc.com", "BBC"),
 ];
 
 fn validate_story_identity(edition: &ResearchEdition, report: &mut ValidationReport) {
@@ -247,7 +253,7 @@ fn validate_photo_candidates(edition: &ResearchEdition, report: &mut ValidationR
 }
 
 fn validate_provider_diversity(edition: &ResearchEdition, report: &mut ValidationReport) {
-    if edition.stories.len() != 6 {
+    if edition.stories.len() != 4 {
         return;
     }
     let providers = edition.stories.iter().filter_map(|story| {
@@ -264,11 +270,11 @@ fn validate_provider_diversity(edition: &ResearchEdition, report: &mut Validatio
         .values()
         .copied()
         .max()
-        .is_some_and(|count| count > 4)
+        .is_some_and(|count| count > 3)
     {
         report
             .problems
-            .push("dominant source may supply at most four of six stories".into());
+            .push("dominant source may supply at most three of four stories".into());
     }
 }
 
@@ -400,9 +406,15 @@ mod tests {
         assert!(article_url_allowed(
             "https://www.reuters.com/world/europe/example"
         ));
+        assert!(article_url_allowed(
+            "https://www.bbc.com/news/articles/example"
+        ));
         assert!(!article_url_allowed("https://reuters.com/world/"));
         assert!(!article_url_allowed(
             "https://reuters.com.attacker.example/world/story"
+        ));
+        assert!(!article_url_allowed(
+            "https://bbc.com.attacker.example/news/articles/example"
         ));
         assert!(!article_url_allowed("http://reuters.com/world/story"));
     }
@@ -419,6 +431,7 @@ mod tests {
             ("https://www.handelsblatt.com/a/b", "Handelsblatt"),
             ("https://www.dw.com/en/story/a-123", "DW"),
             ("https://m.dw.com/en/story/a-123", "DW"),
+            ("https://www.bbc.com/news/articles/example", "BBC"),
         ];
         for (url, expected) in providers {
             assert_eq!(provider_name(url), Some(expected));
@@ -436,7 +449,13 @@ mod tests {
         );
         assert_eq!(
             EVENING_DOMAINS,
-            ["handelsblatt.com", "tagesschau.de", "ft.com", "dw.com"]
+            [
+                "handelsblatt.com",
+                "tagesschau.de",
+                "ft.com",
+                "dw.com",
+                "bbc.com"
+            ]
         );
         assert_eq!(domains_for_edition(&EditionName::Morning), MORNING_DOMAINS);
         assert_eq!(domains_for_edition(&EditionName::Evening), EVENING_DOMAINS);
@@ -498,13 +517,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dominant_source_above_four_stories()
+    fn rejects_dominant_source_above_three_stories()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut research = fixture()?;
         research
             .stories
             .iter_mut()
-            .take(5)
+            .take(4)
             .enumerate()
             .for_each(|(index, story)| {
                 story.sources = vec![crate::model::ResearchSource {
@@ -515,7 +534,7 @@ mod tests {
 
         let report = validate_edition(&research, now()?);
         assert!(report.problems.iter().any(|problem| {
-            problem == "dominant source may supply at most four of six stories"
+            problem == "dominant source may supply at most three of four stories"
         }));
         Ok(())
     }

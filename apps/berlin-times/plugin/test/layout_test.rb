@@ -5,6 +5,7 @@ require 'selenium-webdriver'
 WIDTH = 1872
 HEIGHT = 1404
 MAX_PHOTO_AREA = 0.18
+MIN_PHOTO_AREA = 0.10
 MIN_SUMMARY_FONT_SIZE = 34
 
 options = Selenium::WebDriver::Firefox::Options.new
@@ -75,6 +76,17 @@ begin
     const contentBox = document.querySelector('.bt-page')?.getBoundingClientRect().toJSON();
     const mastheadBox = document.querySelector('.bt-masthead')?.getBoundingClientRect().toJSON();
     const datelineBox = document.querySelector('.bt-dateline')?.getBoundingClientRect().toJSON();
+    const leftBox = document.querySelector('.bt-left')?.getBoundingClientRect().toJSON();
+    const railBox = document.querySelector('.bt-story--rail')?.getBoundingClientRect().toJSON();
+    const leadBox = document.querySelector('.bt-story--lead')?.getBoundingClientRect().toJSON();
+    const lowerBox = document.querySelector('.bt-lower')?.getBoundingClientRect().toJSON();
+    const masthead = document.querySelector('.bt-masthead__name');
+    const canvas = document.createElement('canvas');
+    const context = canvas.getContext('2d');
+    context.font = '700 92px "Berlin Fraktur"';
+    const frakturWidth = context.measureText('The Berlin Times').width;
+    context.font = '700 92px serif';
+    const fallbackWidth = context.measureText('The Berlin Times').width;
     const outside = Array.from(page?.querySelectorAll('*') || [])
       .filter((element) => {
         const box = element.getBoundingClientRect();
@@ -109,8 +121,12 @@ begin
         .map((story) => story.dataset.storyId)).size,
       visibleImages: images.length,
       caption: document.querySelector('.bt-caption')?.textContent,
-      secondaryHeadline: document.querySelectorAll('.bt-headline')[1]?.textContent,
+      leadStoryId: document.querySelector('.bt-story--lead')?.dataset.storyId,
+      photoStoryId: document.querySelector('.bt-photo')?.dataset.photoStoryId,
+      bottomStories: document.querySelectorAll('.bt-lower .bt-story').length,
       photoArea: photo ? photo.width * photo.height / (#{WIDTH} * #{HEIGHT}) : 1,
+      columnRatio: leftBox?.width / (leftBox?.width + railBox?.width),
+      upperRowRatio: leadBox?.height / (leadBox?.height + lowerBox?.height),
       pageWidth: pageBox?.width,
       pageHeight: pageBox?.height,
       pageScrollTop: page?.scrollTop,
@@ -123,6 +139,11 @@ begin
       screenHeight: screen?.getBoundingClientRect().height,
       minimumSummaryFontSize: Math.min(...summaries.map((summary) =>
         Number.parseFloat(getComputedStyle(summary).fontSize))),
+      justifiedSummaries: summaries
+        .filter((summary) => getComputedStyle(summary).textAlign === 'justify').length,
+      mastheadFontFamily: masthead ? getComputedStyle(masthead).fontFamily : '',
+      frakturLoaded: document.fonts.check('700 92px "Berlin Fraktur"') &&
+        Math.abs(frakturWidth - fallbackWidth) > 1,
       clampedSummaries: summaries
         .filter((summary) => getComputedStyle(summary).webkitLineClamp !== 'none')
         .map((summary) => summary.closest('[data-story-id]')?.dataset.storyId),
@@ -154,16 +175,29 @@ begin
 
   failures = []
   failures << "plugin layout did not reach a stable state" unless layout_ready
-  failures << "expected six articles, received #{result['articles']}" unless result['articles'] == 6
-  failures << "expected six headlines, received #{result['headlines']}" unless result['headlines'] == 6
-  failures << "expected six summaries, received #{result['summaries']}" unless result['summaries'] == 6
-  failures << "story ids are not unique" unless result['uniqueStories'] == 6
+  failures << "expected four articles, received #{result['articles']}" unless result['articles'] == 4
+  failures << "expected four headlines, received #{result['headlines']}" unless result['headlines'] == 4
+  failures << "expected four summaries, received #{result['summaries']}" unless result['summaries'] == 4
+  failures << "story ids are not unique" unless result['uniqueStories'] == 4
   failures << "expected one visible image, received #{result['visibleImages']}" unless result['visibleImages'] == 1
-  unless result['caption']&.include?(result['secondaryHeadline'].to_s.strip)
-    failures << "caption does not identify photographed secondary story: #{result['caption'].inspect}"
+  unless result['caption']&.start_with?('Photograph: ')
+    failures << "unexpected photo caption: #{result['caption'].inspect}"
+  end
+  unless result['leadStoryId'] == result['photoStoryId']
+    failures << "lead #{result['leadStoryId']} does not match photo #{result['photoStoryId']}"
+  end
+  failures << "expected two bottom stories" unless result['bottomStories'] == 2
+  if result['photoArea'].to_f < MIN_PHOTO_AREA
+    failures << format('photo occupies only %.2f%% of screen', result['photoArea'].to_f * 100)
   end
   if result['photoArea'].to_f > MAX_PHOTO_AREA
     failures << format('photo occupies %.2f%% of screen', result['photoArea'].to_f * 100)
+  end
+  unless (result['columnRatio'].to_f - 0.80).abs <= 0.01
+    failures << format('left column ratio is %.3f', result['columnRatio'].to_f)
+  end
+  unless (result['upperRowRatio'].to_f - 0.60).abs <= 0.01
+    failures << format('upper row ratio is %.3f', result['upperRowRatio'].to_f)
   end
   failures << "screen width is #{result['screenWidth']}" unless result['screenWidth'].round == WIDTH
   failures << "screen height is #{result['screenHeight']}" unless result['screenHeight'].round == HEIGHT
@@ -177,6 +211,12 @@ begin
   failures << "content top is #{result['contentTop']}" unless result['contentTop'].to_f.round == 170
   if result['minimumSummaryFontSize'].to_f < MIN_SUMMARY_FONT_SIZE
     failures << "minimum summary font size is #{result['minimumSummaryFontSize']}"
+  end
+  unless result['justifiedSummaries'] == 4
+    failures << "only #{result['justifiedSummaries']} summaries are justified"
+  end
+  unless result['mastheadFontFamily'].to_s.include?('Berlin Fraktur') && result['frakturLoaded']
+    failures << "Fraktur masthead font is unavailable: #{result['mastheadFontFamily'].inspect}"
   end
   unless result['clampedSummaries'].empty?
     failures << "summaries are clamped: #{result['clampedSummaries'].join(', ')}"
@@ -200,7 +240,7 @@ begin
   driver.execute_script('window.scrollTo(0, 0)')
   driver.save_screenshot(output)
   File.chmod(0o644, output)
-  puts format('layout valid: six stories, one image, %.2f%% photo area', result['photoArea'].to_f * 100)
+  puts format('layout valid: four stories, one image, %.2f%% photo area', result['photoArea'].to_f * 100)
 ensure
   driver.quit
 end

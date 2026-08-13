@@ -55,42 +55,12 @@
           "url": "https://www.handelsblatt.com/technik/it-internet/cloud-security-rules/100000001.html"
         }
       ]
-    },
-    {
-      "id": "cities-across-southern-europe-expand-cooling-centres-and-f9b8f0f9",
-      "primary_category": "climate",
-      "is_developing": false,
-      "headline": "Cities expand heat response plans",
-      "summary": "Cities across southern Europe expanded cooling centres and health alerts as temperatures rose. Authorities prioritised older residents, outdoor workers, and neighbourhoods with limited shade during the prolonged heat spell.",
-      "published_at": "2026-08-04T23:00:00Z",
-      "sources": [
-        {
-          "name": "The New York Times",
-          "url": "https://www.nytimes.com/2026/08/05/world/europe/heat-response.html"
-        }
-      ]
-    },
-    {
-      "id": "researchers-report-encouraging-results-from-large-late-stage-b3d3d05e",
-      "primary_category": "science",
-      "is_developing": false,
-      "headline": "Impfstoffstudie meldet ermutigende Ergebnisse",
-      "summary": "Researchers reported encouraging results from a large late-stage vaccine trial, with fewer severe cases among participants receiving the treatment. Independent reviewers said longer follow-up remains necessary before regulators consider approval.",
-      "published_at": "2026-08-04T22:15:00Z",
-      "sources": [
-        {
-          "name": "Tagesschau",
-          "url": "https://www.tagesschau.de/wissen/gesundheit/vaccine-trial-100.html"
-        }
-      ]
     }
   ],
   "photo_candidates": [
     "global-markets-shift-as-investors-weigh-fresh-inflation-669ead03",
     "atlantic-allies-open-emergency-security-talks-b5932f17",
     "berlin-transport-officials-advance-repairs-on-heavily-used-f29e34a1",
-    "cities-across-southern-europe-expand-cooling-centres-and-f9b8f0f9",
-    "european-regulators-issue-detailed-security-requirements-for-cloud-98254877",
-    "researchers-report-encouraging-results-from-large-late-stage-b3d3d05e"
+    "european-regulators-issue-detailed-security-requirements-for-cloud-98254877"
   ]
 }

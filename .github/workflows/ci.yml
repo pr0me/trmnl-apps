@@ -68,7 +68,8 @@ jobs:
       - name: Validate published interface
         run: |
           test "$(jq '.schema_version' _site/edition.json)" = "1"
-          test "$(jq '.stories | length' _site/edition.json)" = "6"
+          test "$(jq '.stories | length' _site/edition.json)" = "4"
+          test "$(jq '.lead_image.story_id == .stories[0].id' _site/edition.json)" = "true"
           test "$(find _site/assets -maxdepth 1 -name 'lead-*.jpg' | wc -l)" = "1"
 
       - uses: actions/upload-artifact@v7
@@ -134,6 +135,13 @@ jobs:
           docker run --rm
           -v "$PWD/apps/berlin-times/plugin:/plugin"
           trmnl/trmnlp:latest lint
+
+      - name: Test production asset resolution
+        run: >-
+          docker run --rm
+          --entrypoint /usr/local/bin/ruby
+          -v "$PWD/apps/berlin-times/plugin:/plugin"
+          trmnl/trmnlp:latest test/shared_test.rb
 
       - name: Render TRMNL X fixture
         run: >-

@@ -1,0 +1,36 @@
+{
+  "requestId": "exa-deep-test-request",
+  "costDollars": { "total": 0.012 },
+  "results": [],
+  "output": {
+    "content": {
+      "stories": [
+        {
+          "title": "Allies open urgent regional security talks",
+          "url": "https://www.reuters.com/world/europe/allies-open-security-talks-2026-08-05/",
+          "publishedDate": "2026-08-05T06:00:00Z",
+          "image": "https://static.reuters.com/images/security-talks.jpg",
+          "summary": "Atlantic allies opened urgent talks after regional security conditions deteriorated, focusing first on civilian protection and diplomatic access. Officials said further decisions would depend on independently verified developments and consultations continuing throughout the day among defense and foreign ministers from member states."
+        },
+        {
+          "title": "Ungrounded result must not be published",
+          "url": "https://www.ft.com/content/ungrounded-result",
+          "publishedDate": "2026-08-05T05:30:00Z",
+          "image": "https://images.ft.com/ungrounded-result.jpg",
+          "summary": "This syntactically valid story lacks an Exa grounding citation and must not enter the candidate pool. The local contract test ensures synthesized URLs cannot bypass source attribution."
+        }
+      ]
+    },
+    "grounding": [
+      {
+        "field": "stories[0].title",
+        "citations": [
+          {
+            "url": "https://www.reuters.com/world/europe/allies-open-security-talks-2026-08-05/",
+            "title": "Allies open urgent regional security talks"
+          }
+        ]
+      }
+    ]
+  }
+}

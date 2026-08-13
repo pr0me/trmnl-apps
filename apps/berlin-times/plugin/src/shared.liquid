@@ -1,7 +1,10 @@
+{% assign bt_public_base_url = trmnl.plugin_settings.custom_fields_values.public_base_url | default: public_base_url %}
 {% assign bt_stylesheet_url = stylesheet_url %}
 {% if bt_stylesheet_url == blank %}
-  {% assign bt_lead_image_name = lead_image.url | split: "/" | last %}
-  {% assign bt_stylesheet_url = lead_image.url | replace: bt_lead_image_name, "berlin-times.css" %}
+  {% if bt_public_base_url == blank %}
+    {% assign bt_public_base_url = "https://pr0me.github.io/trmnl-apps/" %}
+  {% endif %}
+  {% assign bt_stylesheet_url = bt_public_base_url | append: "assets/berlin-times.css" %}
 {% endif %}
 {% assign bt_fraktur_url = bt_stylesheet_url | replace: "berlin-times.css", "fonts/UnifrakturCook-Bold.ttf" %}
 {% assign bt_serif_url = bt_stylesheet_url | replace: "berlin-times.css", "fonts/SourceSerif4-Variable.ttf" %}

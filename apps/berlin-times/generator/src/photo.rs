@@ -23,6 +23,9 @@ const MAX_IMAGE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 32_000_000;
 const OUTPUT_WIDTH: u32 = 1_120;
 const OUTPUT_HEIGHT: u32 = 734;
+const PLACEHOLDER_SAMPLE_SIZE: u32 = 64;
+const PLACEHOLDER_DOMINANT_RATIO: f64 = 0.72;
+const PLACEHOLDER_MAX_ENTROPY: f64 = 1.8;
 
 #[derive(Debug)]
 pub struct PhotoAsset {
@@ -69,8 +72,15 @@ impl SafeHttp {
                         None
                     })
             })
+            .filter(|story| !story.is_carried)
             .flat_map(|story| story.sources.iter().map(move |source| (story, source)))
             .collect::<Vec<_>>();
+
+        if candidates.is_empty() {
+            return Err(GeneratorError::NoPhoto(
+                "no fresh story is eligible for lead photograph".into(),
+            ));
+        }
 
         for (story, source) in candidates {
             if let Some(image_url) = story.image_url.as_deref() {
@@ -97,33 +107,6 @@ impl SafeHttp {
             }
         }
         Err(GeneratorError::NoPhoto(failures.join("; ")))
-    }
-
-    pub async fn fetch_published_photo(&self, image_url: &str) -> Result<Vec<u8>> {
-        let image_url = Url::parse(image_url)
-            .map_err(|error| GeneratorError::UnsafeUrl(format!("invalid image url: {error}")))?;
-        let image = self.fetch(image_url, MAX_IMAGE_BYTES, "image/jpeg").await?;
-        if !image
-            .content_type
-            .as_deref()
-            .is_some_and(|value| value.starts_with("image/jpeg"))
-        {
-            return Err(GeneratorError::NoPhoto(
-                "published photo is not a jpeg".into(),
-            ));
-        }
-        let reader = ImageReader::new(Cursor::new(&image.bytes))
-            .with_guessed_format()
-            .map_err(|error| GeneratorError::Image(error.to_string()))?;
-        let dimensions = reader
-            .into_dimensions()
-            .map_err(|error| GeneratorError::Image(error.to_string()))?;
-        if dimensions != (OUTPUT_WIDTH, OUTPUT_HEIGHT) {
-            return Err(GeneratorError::Image(
-                "published photo has unexpected dimensions".into(),
-            ));
-        }
-        Ok(image.bytes)
     }
 
     async fn photo_from_image(
@@ -358,6 +341,11 @@ fn process_image(bytes: &[u8], enforce_dimensions: bool) -> Result<Vec<u8>> {
         .map_err(|error| GeneratorError::Image(error.to_string()))?
         .decode()
         .map_err(|error| GeneratorError::Image(error.to_string()))?;
+    if enforce_dimensions && is_probable_placeholder(&decoded) {
+        return Err(GeneratorError::Image(
+            "image appears to be placeholder artwork".into(),
+        ));
+    }
     let grayscale = decoded.grayscale();
     let processed = if enforce_dimensions {
         grayscale.adjust_contrast(8.0).resize_to_fill(
@@ -369,6 +357,32 @@ fn process_image(bytes: &[u8], enforce_dimensions: bool) -> Result<Vec<u8>> {
         grayscale.resize_to_fill(OUTPUT_WIDTH, OUTPUT_HEIGHT, FilterType::Nearest)
     };
     encode_jpeg(&processed)
+}
+
+fn is_probable_placeholder(image: &DynamicImage) -> bool {
+    let sample = image
+        .resize_exact(
+            PLACEHOLDER_SAMPLE_SIZE,
+            PLACEHOLDER_SAMPLE_SIZE,
+            FilterType::Triangle,
+        )
+        .to_luma8();
+    let histogram = sample.pixels().fold([0_u32; 16], |mut bins, pixel| {
+        bins[usize::from(pixel.0[0] / 16)] += 1;
+        bins
+    });
+    let total = f64::from(PLACEHOLDER_SAMPLE_SIZE * PLACEHOLDER_SAMPLE_SIZE);
+    let dominant_ratio = histogram
+        .iter()
+        .max()
+        .map_or(0.0, |count| f64::from(*count) / total);
+    let entropy = histogram
+        .iter()
+        .filter(|count| **count > 0)
+        .map(|count| f64::from(*count) / total)
+        .map(|probability| -probability * probability.log2())
+        .sum::<f64>();
+    dominant_ratio >= PLACEHOLDER_DOMINANT_RATIO && entropy <= PLACEHOLDER_MAX_ENTROPY
 }
 
 fn encode_jpeg(image: &DynamicImage) -> Result<Vec<u8>> {
@@ -506,7 +520,30 @@ mod tests {
 
     fn image_bytes() -> Vec<u8> {
         let mut bytes = b"P6\n640 360\n255\n".to_vec();
-        bytes.resize(bytes.len() + (640 * 360 * 3), 127);
+        bytes.extend((0..640 * 360).flat_map(|index| {
+            let x = index % 640;
+            let y = index / 640;
+            [
+                u8::try_from((x * 3 + y * 5) % 256).map_or(0, |value| value),
+                u8::try_from((x * 7 + y * 2) % 256).map_or(0, |value| value),
+                u8::try_from((x + y * 11) % 256).map_or(0, |value| value),
+            ]
+        }));
+        bytes
+    }
+
+    fn placeholder_bytes() -> Vec<u8> {
+        let mut bytes = b"P6\n640 360\n255\n".to_vec();
+        bytes.extend((0..640 * 360).flat_map(|index| {
+            let x = index % 640;
+            let y = index / 640;
+            let value = if (160..480).contains(&x) && (145..215).contains(&y) {
+                20
+            } else {
+                240
+            };
+            [value, value, value]
+        }));
         bytes
     }
 
@@ -563,6 +600,16 @@ mod tests {
         assert!(meta_content(&document, "property", "og:image").is_none());
     }
 
+    #[test]
+    fn rejects_low_entropy_placeholder_artwork() {
+        let result = process_image(&placeholder_bytes(), true);
+        assert!(
+            result
+                .err()
+                .is_some_and(|error| error.to_string().contains("placeholder artwork"))
+        );
+    }
+
     #[tokio::test]
     async fn uses_direct_exa_image() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let server = MockServer::start().await;
@@ -587,27 +634,6 @@ mod tests {
         assert_eq!(photo.story_id, "test-story");
         assert_eq!(photo.credit, "Reuters");
         assert!(photo.source_page_url.ends_with("/article"));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn validates_published_photo() -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let server = MockServer::start().await;
-        let expected = process_image(&image_bytes(), true)?;
-        Mock::given(method("GET"))
-            .and(path("/published.jpg"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("Content-Type", "image/jpeg")
-                    .set_body_bytes(expected.clone()),
-            )
-            .mount(&server)
-            .await;
-
-        let actual = test_http()
-            .fetch_published_photo(&format!("{}/published.jpg", server.uri()))
-            .await?;
-        assert_eq!(actual, expected);
         Ok(())
     }
 
@@ -653,9 +679,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn selects_later_story_with_usable_image()
+    async fn selects_later_story_after_rejecting_placeholder()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/placeholder"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "image/x-portable-pixmap")
+                    .set_body_bytes(placeholder_bytes()),
+            )
+            .mount(&server)
+            .await;
         Mock::given(method("GET"))
             .and(path("/article"))
             .respond_with(ResponseTemplate::new(200).set_body_raw("<html></html>", "text/html"))
@@ -671,6 +706,7 @@ mod tests {
             .mount(&server)
             .await;
         let mut edition = edition(&server, None);
+        edition.stories[0].image_url = Some(format!("{}/placeholder", server.uri()));
         let mut second = edition
             .stories
             .first()

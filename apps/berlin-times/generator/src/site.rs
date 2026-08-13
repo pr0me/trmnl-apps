@@ -53,7 +53,6 @@ pub fn publish_site(
     edition: &EditionV1,
     photo_name: &str,
     photo_bytes: &[u8],
-    previous_photo: Option<(&str, &[u8])>,
 ) -> Result<()> {
     let output = output.as_ref();
     let parent = output.parent().unwrap_or_else(|| Path::new("."));
@@ -71,11 +70,6 @@ pub fn publish_site(
     edition_json.push('\n');
     write(staging.join("edition.json"), edition_json.as_bytes())?;
     write(assets.join(photo_name), photo_bytes)?;
-    if let Some((previous_name, previous_bytes)) = previous_photo
-        && previous_name != photo_name
-    {
-        write(assets.join(previous_name), previous_bytes)?;
-    }
     write(fonts.join("UnifrakturCook-Bold.ttf"), UNIFRAKTUR_COOK)?;
     write(fonts.join("SourceSerif4-Variable.ttf"), SOURCE_SERIF)?;
     write(fonts.join("OFL.txt"), FONT_LICENSE)?;

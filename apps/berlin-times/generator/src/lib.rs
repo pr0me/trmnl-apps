@@ -19,7 +19,7 @@ use crate::{
     error::{GeneratorError, Result, io_error},
     exa::{ExaClient, fit_summary},
     model::{EditionV1, ResearchEdition},
-    photo::{PhotoAsset, SafeHttp, fixture_photo},
+    photo::{SafeHttp, fixture_photo},
 };
 
 pub struct GenerateOptions {
@@ -32,42 +32,13 @@ pub struct GenerateOptions {
     pub api_base: Url,
 }
 
-struct PreviousEdition {
-    edition: EditionV1,
-    photo: Option<PreviousPhoto>,
-}
-
-struct PreviousPhoto {
-    name: String,
-    bytes: Vec<u8>,
-    story_id: String,
-    alt: String,
-    credit: String,
-    source_page_url: String,
-}
-
-impl PreviousPhoto {
-    fn into_asset(self) -> (String, PhotoAsset) {
-        (
-            self.name,
-            PhotoAsset {
-                bytes: self.bytes,
-                story_id: self.story_id,
-                alt: self.alt,
-                credit: self.credit,
-                source_page_url: self.source_page_url,
-            },
-        )
-    }
-}
-
 /// Generates and atomically publishes a complete static edition of The Berlin Times.
 ///
 /// # Errors
 ///
 /// Returns error when research, validation, photo processing, or publication fails.
 pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
-    let mut previous = if options.fixture.is_some() {
+    let previous = if options.fixture.is_some() {
         None
     } else {
         fetch_previous_edition(&options.public_base_url).await
@@ -75,18 +46,20 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
     let mut research = if let Some(path) = &options.fixture {
         read_fixture(path).await?
     } else {
-        research_live(options, previous.as_ref().map(|previous| &previous.edition)).await?
+        research_live(options, previous.as_ref()).await?
     };
     validate_result(&research, options.at)?;
 
-    let mut reused_photo_name = None;
     let photo = if let Some(path) = &options.fixture_image {
         let bytes = tokio::fs::read(path).await.map_err(io_error(path))?;
         let candidate = research
             .photo_candidates
-            .first()
-            .and_then(|id| research.stories.iter().find(|story| story.id == *id))
-            .ok_or_else(|| GeneratorError::Config("fixture has no photo candidate story".into()))?;
+            .iter()
+            .filter_map(|id| research.stories.iter().find(|story| story.id == *id))
+            .find(|story| !story.is_carried)
+            .ok_or_else(|| {
+                GeneratorError::Config("fixture has no fresh photo candidate story".into())
+            })?;
         let source = candidate
             .sources
             .first()
@@ -97,41 +70,25 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
             "--fixture-image is required with --fixture".into(),
         ));
     } else {
-        match SafeHttp::new().build_lead_photo(&research).await {
-            Ok(photo) => photo,
-            Err(error) => {
-                let reused = previous.as_mut().and_then(|previous| {
-                    take_reusable_previous_photo(&mut previous.photo, &research)
-                });
-                let Some((name, photo)) = reused else {
-                    return Err(error);
-                };
-                reused_photo_name = Some(name);
-                photo
-            }
-        }
+        SafeHttp::new().build_lead_photo(&research).await?
     };
 
+    let rail_story_id = String::from(longest_summary_story_id_excluding(
+        &research,
+        &photo.story_id,
+    )?);
+    arrange_layout_stories(&mut research, &photo.story_id, &rail_story_id)?;
+    info!(
+        lead_story_id = %photo.story_id,
+        rail_story_id = %rail_story_id,
+        "edition layout roles assigned"
+    );
     fit_layout_summaries(&mut research);
     validate_result(&research, options.at)?;
 
     let (edition, photo_name) =
         site::assemble_edition(&research, &photo, &options.public_base_url, options.at)?;
-    let previous_photo = if let Some(name) = reused_photo_name.as_deref() {
-        Some((name, photo.bytes.as_slice()))
-    } else {
-        previous
-            .as_ref()
-            .and_then(|previous| previous.photo.as_ref())
-            .map(|photo| (photo.name.as_str(), photo.bytes.as_slice()))
-    };
-    site::publish_site(
-        &options.output,
-        &edition,
-        &photo_name,
-        &photo.bytes,
-        previous_photo,
-    )?;
+    site::publish_site(&options.output, &edition, &photo_name, &photo.bytes)?;
     info!(edition_id = %edition.edition_id, output = %options.output.display(), "edition generated");
     Ok(edition)
 }
@@ -149,7 +106,11 @@ async fn research_live(
         .timeout(Duration::from_secs(60))
         .build()?;
     let client = ExaClient::new(http, &options.api_base, api_key)?;
-    client.research(options.at, previous).await
+    let mut research = client.research(options.at, previous).await?;
+    if let Err(error) = client.enrich_images(&mut research).await {
+        warn!(%error, "Exa image metadata could not be resolved");
+    }
+    Ok(research)
 }
 
 fn validation_report(research: &ResearchEdition, at: DateTime<Utc>) -> validate::ValidationReport {
@@ -166,7 +127,7 @@ async fn read_fixture(path: impl AsRef<Path>) -> Result<ResearchEdition> {
     serde_json::from_slice(&bytes).map_err(GeneratorError::from)
 }
 
-async fn fetch_previous_edition(public_base_url: &Url) -> Option<PreviousEdition> {
+async fn fetch_previous_edition(public_base_url: &Url) -> Option<EditionV1> {
     let mut base = public_base_url.clone();
     if !base.path().ends_with('/') {
         let path = format!("{}/", base.path());
@@ -178,11 +139,7 @@ async fn fetch_previous_edition(public_base_url: &Url) -> Option<PreviousEdition
         .build()
         .ok()?;
     match client.get(url).send().await {
-        Ok(response) if response.status().is_success() => {
-            let edition = response.json::<EditionV1>().await.ok()?;
-            let photo = fetch_previous_photo(public_base_url, &edition).await;
-            Some(PreviousEdition { edition, photo })
-        }
+        Ok(response) if response.status().is_success() => response.json::<EditionV1>().await.ok(),
         Ok(response) => {
             warn!(status = %response.status(), "previous edition was unavailable");
             None
@@ -194,64 +151,92 @@ async fn fetch_previous_edition(public_base_url: &Url) -> Option<PreviousEdition
     }
 }
 
-async fn fetch_previous_photo(public_base_url: &Url, edition: &EditionV1) -> Option<PreviousPhoto> {
-    let name = previous_photo_name(public_base_url, &edition.lead_image.url)?;
-    match SafeHttp::new()
-        .fetch_published_photo(&edition.lead_image.url)
-        .await
-    {
-        Ok(bytes) => Some(PreviousPhoto {
-            name,
-            bytes,
-            story_id: edition.lead_image.story_id.clone(),
-            alt: edition.lead_image.alt.clone(),
-            credit: edition.lead_image.credit.clone(),
-            source_page_url: edition.lead_image.source_page_url.clone(),
-        }),
-        Err(error) => {
-            warn!(%error, "previous lead photo could not be retained");
-            None
-        }
-    }
-}
-
-fn take_reusable_previous_photo(
-    previous: &mut Option<PreviousPhoto>,
-    research: &ResearchEdition,
-) -> Option<(String, PhotoAsset)> {
-    let story_id = previous.as_ref().map(|photo| photo.story_id.as_str())?;
-    if !research.stories.iter().any(|story| story.id == story_id) {
-        return None;
-    }
-    previous.take().map(PreviousPhoto::into_asset)
-}
-
-fn previous_photo_name(public_base_url: &Url, image_url: &str) -> Option<String> {
-    let image_url = Url::parse(image_url).ok()?;
-    if image_url.origin() != public_base_url.origin() {
-        return None;
-    }
-    let mut prefix = String::from(public_base_url.path());
-    if !prefix.ends_with('/') {
-        prefix.push('/');
-    }
-    prefix.push_str("assets/");
-    let name = image_url.path().strip_prefix(&prefix)?;
-    let is_jpeg = Path::new(name)
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("jpg"));
-    (name.starts_with("lead-") && is_jpeg && !name.contains('/')).then(|| name.into())
-}
-
 fn fit_layout_summaries(edition: &mut ResearchEdition) {
     edition
         .stories
         .iter_mut()
         .enumerate()
         .for_each(|(index, story)| {
-            let limit = if index == 0 { 36 } else { 30 };
+            let limit = match index {
+                0 => 36,
+                1 => 45,
+                _ => 30,
+            };
             story.summary = fit_summary(&story.summary, limit);
         });
+}
+
+fn longest_summary_story_id_excluding<'a>(
+    edition: &'a ResearchEdition,
+    excluded_story_id: &str,
+) -> Result<&'a str> {
+    edition
+        .stories
+        .iter()
+        .filter(|story| story.id != excluded_story_id)
+        .reduce(|longest, story| {
+            if word_count(&longest.summary) >= word_count(&story.summary) {
+                longest
+            } else {
+                story
+            }
+        })
+        .map(|story| story.id.as_str())
+        .ok_or_else(|| {
+            GeneratorError::Validation("edition has no distinct story for right rail".into())
+        })
+}
+
+fn arrange_layout_stories(
+    edition: &mut ResearchEdition,
+    lead_story_id: &str,
+    rail_story_id: &str,
+) -> Result<()> {
+    if lead_story_id == rail_story_id {
+        return Err(GeneratorError::Validation(
+            "lead and right rail must use distinct stories".into(),
+        ));
+    }
+
+    let mut lead = None;
+    let mut rail = None;
+    let mut supporting = Vec::new();
+    for story in std::mem::take(&mut edition.stories) {
+        if story.id == lead_story_id {
+            lead = Some(story);
+        } else if story.id == rail_story_id {
+            rail = Some(story);
+        } else {
+            supporting.push(story);
+        }
+    }
+
+    let lead = lead.ok_or_else(|| {
+        GeneratorError::Validation("lead photograph does not match a selected story".into())
+    })?;
+    if lead.is_carried {
+        return Err(GeneratorError::Validation(
+            "lead photograph must belong to a fresh story".into(),
+        ));
+    }
+    let rail = rail.ok_or_else(|| {
+        GeneratorError::Validation("right rail does not match a selected story".into())
+    })?;
+    if supporting.len() != 2 {
+        return Err(GeneratorError::Validation(
+            "layout requires exactly two supporting stories".into(),
+        ));
+    }
+
+    edition.stories = std::iter::once(lead)
+        .chain(std::iter::once(rail))
+        .chain(supporting)
+        .collect();
+    Ok(())
+}
+
+fn word_count(value: &str) -> usize {
+    value.split_whitespace().count()
 }
 
 #[cfg(test)]
@@ -261,12 +246,20 @@ mod tests {
     use chrono::{TimeZone, Utc};
     use tempfile::tempdir;
     use url::Url;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
 
     use super::{
-        GenerateOptions, PreviousPhoto, fit_layout_summaries, generate, previous_photo_name,
-        take_reusable_previous_photo,
+        GenerateOptions, arrange_layout_stories, fit_layout_summaries, generate,
+        longest_summary_story_id_excluding, validate_result,
     };
-    use crate::model::ResearchEdition;
+    use crate::{
+        exa::ExaClient,
+        model::{EditionName, EditionV1, LeadImageV1, ResearchEdition, StoryV1},
+        photo::fixture_photo,
+    };
 
     #[tokio::test]
     async fn failed_generation_preserves_existing_output()
@@ -297,70 +290,186 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn recognizes_previous_photo_on_public_site()
+    #[tokio::test]
+    async fn deep_contract_with_one_fresh_story_publishes_distinct_lead_and_rail()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let base = Url::parse("https://example.com/trmnl-apps/")?;
+        let server = MockServer::start().await;
+        let response = serde_json::from_str::<serde_json::Value>(include_str!(
+            "../fixtures/exa-deep-response.json"
+        ))?;
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let at = Utc
+            .with_ymd_and_hms(2026, 8, 5, 10, 0, 0)
+            .single()
+            .ok_or("fixed time must exist")?;
+        let carried = serde_json::from_str::<ResearchEdition>(include_str!(
+            "../fixtures/valid-research.json"
+        ))?;
+        let previous_stories = carried
+            .stories
+            .iter()
+            .map(StoryV1::from)
+            .collect::<Vec<_>>();
+        let previous_lead = previous_stories
+            .first()
+            .map(|story| story.id.clone())
+            .ok_or("fixture must contain previous story")?;
+        let previous = EditionV1 {
+            schema_version: 1,
+            edition_id: "previous-evening".into(),
+            edition_name: EditionName::Evening,
+            display_date: "Tuesday, 4 August 2026".into(),
+            generated_at: "2026-08-04T16:00:00Z".parse()?,
+            next_scheduled_at: "2026-08-05T06:00:00+02:00".parse()?,
+            stories: previous_stories,
+            lead_image: LeadImageV1 {
+                story_id: previous_lead,
+                url: "https://example.com/previous.jpg".into(),
+                alt: "Previous lead".into(),
+                credit: "Reuters".into(),
+                source_page_url: "https://www.reuters.com/world/europe/previous-story".into(),
+            },
+        };
+        let api_base = Url::parse(&format!("{}/", server.uri()))?;
+        let client = ExaClient::new(reqwest::Client::new(), &api_base, "test-key")?;
+        let mut research = client.research(at, Some(&previous)).await?;
+        validate_result(&research, at)?;
+
+        let fresh = research
+            .stories
+            .iter()
+            .find(|story| !story.is_carried)
+            .ok_or("deep response must yield one fresh story")?;
+        assert!(fresh.image_url.is_none());
+        let lead_id = fresh.id.clone();
+        let source = fresh
+            .sources
+            .first()
+            .ok_or("fresh story must have source")?;
+        let photo = fixture_photo(
+            include_bytes!("../fixtures/lead.ppm"),
+            fresh,
+            &source.name,
+            &source.url,
+        )?;
+        let rail_id = String::from(longest_summary_story_id_excluding(
+            &research,
+            &photo.story_id,
+        )?);
+        arrange_layout_stories(&mut research, &photo.story_id, &rail_id)?;
+        fit_layout_summaries(&mut research);
+        validate_result(&research, at)?;
+
+        let public_base = Url::parse("https://example.com/berlin-times/")?;
+        let (edition, photo_name) =
+            crate::site::assemble_edition(&research, &photo, &public_base, at)?;
+        let temporary = tempdir()?;
+        let output = temporary.path().join("site");
+        crate::site::publish_site(&output, &edition, &photo_name, &photo.bytes)?;
+        let published = serde_json::from_slice::<EditionV1>(
+            &tokio::fs::read(output.join("edition.json")).await?,
+        )?;
+        assert_eq!(edition.stories.len(), 4);
         assert_eq!(
-            previous_photo_name(
-                &base,
-                "https://example.com/trmnl-apps/assets/lead-20260806.jpg"
-            )
-            .as_deref(),
-            Some("lead-20260806.jpg")
+            edition.stories.first().map(|story| &story.id),
+            Some(&lead_id)
         );
-        assert!(
-            previous_photo_name(&base, "https://attacker.example/assets/lead-20260806.jpg")
-                .is_none()
+        assert_eq!(edition.lead_image.story_id, lead_id);
+        assert_ne!(
+            edition.stories.get(1).map(|story| &story.id),
+            Some(&lead_id)
+        );
+        assert_eq!(published.edition_id, edition.edition_id);
+        assert_eq!(published.stories.len(), edition.stories.len());
+        assert_eq!(published.lead_image.story_id, edition.lead_image.story_id);
+        Ok(())
+    }
+
+    #[test]
+    fn assigns_distinct_lead_rail_and_supporting_roles()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut edition = serde_json::from_str::<ResearchEdition>(include_str!(
+            "../fixtures/valid-research.json"
+        ))?;
+        let original_ids = edition
+            .stories
+            .iter()
+            .map(|story| story.id.clone())
+            .collect::<Vec<_>>();
+        let lead_id = original_ids.get(1).ok_or("fixture must contain lead")?;
+        let rail_id = String::from(longest_summary_story_id_excluding(&edition, lead_id)?);
+
+        arrange_layout_stories(&mut edition, lead_id, &rail_id)?;
+
+        assert_eq!(edition.stories[0].id, *lead_id);
+        assert_eq!(edition.stories[1].id, rail_id);
+        assert_eq!(edition.stories[2].id, original_ids[2]);
+        assert_eq!(edition.stories[3].id, original_ids[3]);
+        assert!(!edition.stories[0].is_carried);
+        Ok(())
+    }
+
+    #[test]
+    fn longest_summary_ties_preserve_editorial_order()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut edition = serde_json::from_str::<ResearchEdition>(include_str!(
+            "../fixtures/valid-research.json"
+        ))?;
+        edition
+            .stories
+            .iter_mut()
+            .for_each(|story| story.summary = "same length".into());
+        let excluded = edition
+            .stories
+            .first()
+            .map(|story| story.id.clone())
+            .ok_or("fixture must contain first story")?;
+        let second_id = edition
+            .stories
+            .get(1)
+            .map(|story| story.id.as_str())
+            .ok_or("fixture must contain second story")?;
+
+        assert_eq!(
+            longest_summary_story_id_excluding(&edition, &excluded)?,
+            second_id
         );
         Ok(())
     }
 
     #[test]
-    fn reuses_cached_photo_only_for_a_selected_story()
+    fn rejects_colliding_or_carried_lead_roles()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let research = serde_json::from_str::<ResearchEdition>(include_str!(
+        let edition = serde_json::from_str::<ResearchEdition>(include_str!(
             "../fixtures/valid-research.json"
         ))?;
-        let story_id = research
+        let lead_id = edition
             .stories
             .get(1)
             .map(|story| story.id.clone())
-            .ok_or("fixture must contain second story")?;
-        let bytes = vec![1, 2, 3, 4];
-        let original_pointer = bytes.as_ptr();
-        let mut cached = Some(PreviousPhoto {
-            name: "lead-previous.jpg".into(),
-            bytes,
-            story_id: story_id.clone(),
-            alt: "Cached alt".into(),
-            credit: "Cached credit".into(),
-            source_page_url: "https://www.ft.com/content/cached-photo".into(),
-        });
+            .ok_or("fixture must contain lead")?;
+        let rail_id = String::from(longest_summary_story_id_excluding(&edition, &lead_id)?);
+        let mut collision = edition.clone();
+        assert!(arrange_layout_stories(&mut collision, &rail_id, &rail_id).is_err());
 
-        let (old_name, asset) =
-            take_reusable_previous_photo(&mut cached, &research).ok_or("photo was not reused")?;
-        assert_eq!(old_name, "lead-previous.jpg");
-        assert_eq!(asset.story_id, story_id);
-        assert_eq!(asset.bytes, [1, 2, 3, 4]);
-        assert_eq!(asset.bytes.as_ptr(), original_pointer);
-        assert!(cached.is_none());
-
-        let mut unrelated = Some(PreviousPhoto {
-            name: "lead-unrelated.jpg".into(),
-            bytes: vec![5, 6, 7],
-            story_id: "not-selected".into(),
-            alt: "Unrelated alt".into(),
-            credit: "Unrelated credit".into(),
-            source_page_url: "https://www.reuters.com/world/unrelated/photo".into(),
-        });
-        assert!(take_reusable_previous_photo(&mut unrelated, &research).is_none());
-        assert!(unrelated.is_some());
+        let mut carried = edition;
+        let carried_id = lead_id;
+        let carried_story = carried
+            .stories
+            .get_mut(1)
+            .ok_or("fixture must contain carried lead")?;
+        carried_story.is_carried = true;
+        assert!(arrange_layout_stories(&mut carried, &carried_id, &rail_id).is_err());
         Ok(())
     }
 
     #[test]
-    fn fits_lead_and_supporting_summaries_without_reordering()
+    fn fits_role_specific_summaries_without_reordering()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut edition = serde_json::from_str::<ResearchEdition>(include_str!(
             "../fixtures/valid-research.json"
@@ -375,12 +484,6 @@ mod tests {
             .first()
             .map(|story| story.id.clone())
             .ok_or("fixture must contain a lead")?;
-        let former_lead = edition
-            .stories
-            .get_mut(2)
-            .ok_or("fixture must contain third story")?;
-        former_lead.is_carried = true;
-
         fit_layout_summaries(&mut edition);
 
         assert_eq!(
@@ -394,19 +497,19 @@ mod tests {
                 .map(|story| story.summary.split_whitespace().count()),
             Some(36)
         );
+        assert_eq!(
+            edition
+                .stories
+                .get(1)
+                .map(|story| story.summary.split_whitespace().count()),
+            Some(40)
+        );
         assert!(
             edition
                 .stories
                 .iter()
-                .skip(1)
-                .all(|story| story.summary.split_whitespace().count() <= 30)
-        );
-        assert_eq!(
-            edition
-                .stories
-                .get(2)
-                .map(|story| story.summary.split_whitespace().count()),
-            Some(30)
+                .skip(2)
+                .all(|story| { story.summary.split_whitespace().count() == 30 })
         );
         Ok(())
     }

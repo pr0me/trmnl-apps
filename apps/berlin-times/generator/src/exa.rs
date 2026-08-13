@@ -7,7 +7,8 @@ use std::{
 
 use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::{StatusCode, header::RETRY_AFTER};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::time::sleep;
 use tracing::info;
@@ -26,8 +27,8 @@ use crate::{
 
 const MAX_ATTEMPTS: usize = 3;
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
-const REQUIRED_STORIES: usize = 6;
-const MAX_STORIES_PER_PROVIDER: usize = 4;
+const REQUIRED_STORIES: usize = 4;
+const MAX_STORIES_PER_PROVIDER: usize = 3;
 const MAX_SELECTION_CANDIDATES: usize = 18;
 const GERMANY_TERMS: &[&str] = &[
     "berlin",
@@ -161,7 +162,8 @@ struct SemanticAttempt<'a> {
 #[derive(Clone)]
 pub struct ExaClient {
     http: reqwest::Client,
-    endpoint: Url,
+    search_endpoint: Url,
+    contents_endpoint: Url,
     api_key: String,
 }
 
@@ -174,6 +176,39 @@ pub struct ExaResponse {
     pub cost_dollars: Option<CostDollars>,
     #[serde(default)]
     pub results: Vec<ExaResult>,
+    #[serde(default)]
+    output: Option<ExaOutput>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExaOutput {
+    content: ExaOutputContent,
+    #[serde(default)]
+    grounding: Vec<ExaGrounding>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ExaOutputContent {
+    Structured(StructuredOutput),
+    Json(String),
+}
+
+#[derive(Debug, Deserialize)]
+struct StructuredOutput {
+    #[serde(default)]
+    stories: Vec<ExaResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExaGrounding {
+    #[serde(default)]
+    citations: Vec<ExaCitation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExaCitation {
+    url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -196,6 +231,57 @@ pub struct ExaResult {
     pub summary: Option<String>,
 }
 
+impl ExaResponse {
+    fn research_results(&self) -> Vec<ExaResult> {
+        let grounded_urls = self
+            .output
+            .iter()
+            .flat_map(|output| &output.grounding)
+            .flat_map(|grounding| &grounding.citations)
+            .filter_map(|citation| canonicalize_url(&citation.url).ok())
+            .collect::<HashSet<_>>();
+        let raw_by_url = self
+            .results
+            .iter()
+            .filter_map(|result| canonicalize_url(&result.url).ok().map(|url| (url, result)))
+            .collect::<HashMap<_, _>>();
+        let structured = self
+            .output
+            .as_ref()
+            .and_then(|output| match &output.content {
+                ExaOutputContent::Structured(content) => Some(content.stories.clone()),
+                ExaOutputContent::Json(content) => {
+                    serde_json::from_str::<StructuredOutput>(content)
+                        .ok()
+                        .map(|value| value.stories)
+                }
+            })
+            .unwrap_or_default();
+        let mut seen = HashSet::new();
+        let mut results = structured
+            .into_iter()
+            .filter_map(|mut result| {
+                let canonical = canonicalize_url(&result.url).ok()?;
+                if !grounded_urls.contains(&canonical) || !seen.insert(canonical.clone()) {
+                    return None;
+                }
+                result.image = None;
+                if let Some(raw) = raw_by_url.get(&canonical) {
+                    result.published_date =
+                        result.published_date.or_else(|| raw.published_date.clone());
+                    result.image.clone_from(&raw.image);
+                }
+                Some(result)
+            })
+            .collect::<Vec<_>>();
+        results.extend(self.results.iter().filter_map(|result| {
+            let canonical = canonicalize_url(&result.url).ok()?;
+            seen.insert(canonical).then(|| result.clone())
+        }));
+        results
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchRequest<'a> {
@@ -208,7 +294,7 @@ struct SearchRequest<'a> {
     system_prompt: String,
     start_published_date: String,
     end_published_date: String,
-    output_schema: OutputSchema<'a>,
+    output_schema: Value,
     stream: bool,
     contents: Contents<'a>,
 }
@@ -221,14 +307,31 @@ struct Contents<'a> {
 }
 
 #[derive(Debug, Serialize)]
-struct Summary<'a> {
-    query: &'a str,
+#[serde(rename_all = "camelCase")]
+struct ContentsRequest<'a> {
+    urls: Vec<&'a str>,
+    max_age_hours: i8,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContentsResponse {
+    #[serde(default)]
+    results: Vec<ContentsResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContentsResult {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    image: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-struct OutputSchema<'a> {
-    #[serde(rename = "type")]
-    schema_type: &'a str,
+struct Summary<'a> {
+    query: &'a str,
 }
 
 #[derive(Debug)]
@@ -284,12 +387,16 @@ impl ExaClient {
                 "exa_api_key must not be empty".into(),
             ));
         }
-        let endpoint = api_base
+        let search_endpoint = api_base
             .join("search")
+            .map_err(|error| GeneratorError::Config(format!("invalid api base url: {error}")))?;
+        let contents_endpoint = api_base
+            .join("contents")
             .map_err(|error| GeneratorError::Config(format!("invalid api base url: {error}")))?;
         Ok(Self {
             http,
-            endpoint,
+            search_endpoint,
+            contents_endpoint,
             api_key,
         })
     }
@@ -326,10 +433,11 @@ impl ExaClient {
         let mut current_domains = profile.domains.to_vec();
 
         if candidates.len() < REQUIRED_STORIES || select(&candidates, &[]).is_none() {
+            let initial_results = responses[0].research_results();
             current_domains = retry_domains(
                 profile.domains,
                 profile.domains,
-                &responses[0].results,
+                &initial_results,
                 &previous_urls,
             );
             let (retry, retry_normalization) = self
@@ -357,7 +465,7 @@ impl ExaClient {
         {
             let combined_results = responses
                 .iter()
-                .flat_map(|response| response.results.iter().cloned())
+                .flat_map(ExaResponse::research_results)
                 .collect::<Vec<_>>();
             let prior_domains = retry_domains(
                 profile.domains,
@@ -387,6 +495,57 @@ impl ExaClient {
         finalize_research(candidates, previous, now, &responses)
     }
 
+    pub async fn enrich_images(&self, edition: &mut ResearchEdition) -> Result<usize> {
+        let urls = edition
+            .stories
+            .iter()
+            .filter(|story| !story.is_carried)
+            .filter_map(|story| story.sources.first())
+            .map(|source| source.url.as_str())
+            .collect::<Vec<_>>();
+        if urls.is_empty() {
+            return Ok(0);
+        }
+        let requested = urls.len();
+        let response = self
+            .send_with_retry::<ContentsResponse>(
+                &self.contents_endpoint,
+                &ContentsRequest {
+                    urls,
+                    max_age_hours: -1,
+                },
+            )
+            .await?;
+        let images = response
+            .results
+            .into_iter()
+            .filter_map(|result| {
+                let source_url = result.url.or(result.id)?;
+                let canonical = canonicalize_url(&source_url).ok()?;
+                let image = result.image.filter(|value| safe_image_url(value))?;
+                Some((canonical, image))
+            })
+            .collect::<HashMap<_, _>>();
+        let mut enriched = 0;
+        edition
+            .stories
+            .iter_mut()
+            .filter(|story| !story.is_carried)
+            .for_each(|story| {
+                let image = story
+                    .sources
+                    .first()
+                    .and_then(|source| canonicalize_url(&source.url).ok())
+                    .and_then(|url| images.get(&url));
+                if let Some(image) = image {
+                    story.image_url = Some(image.clone());
+                    enriched += 1;
+                }
+            });
+        info!(requested, enriched, "Exa image metadata resolved");
+        Ok(enriched)
+    }
+
     async fn semantic_search(
         &self,
         profile: EditionProfile,
@@ -394,9 +553,12 @@ impl ExaClient {
         previous_urls: &HashSet<String>,
     ) -> Result<(ExaResponse, Normalization)> {
         let body = search_request(profile, attempt.window, attempt.domains);
-        let response = self.send_with_retry(&body).await?;
+        let response = self
+            .send_with_retry::<ExaResponse>(&self.search_endpoint, &body)
+            .await?;
+        let results = response.research_results();
         let normalization = normalize(
-            &response.results,
+            &results,
             attempt.window,
             attempt.domains,
             previous_urls,
@@ -415,13 +577,20 @@ impl ExaClient {
         Ok((response, normalization))
     }
 
-    async fn send_with_retry(&self, body: &SearchRequest<'_>) -> Result<ExaResponse> {
+    async fn send_with_retry<Response>(
+        &self,
+        endpoint: &Url,
+        body: &impl Serialize,
+    ) -> Result<Response>
+    where
+        Response: DeserializeOwned,
+    {
         let mut attempt = 0;
         loop {
             attempt += 1;
             let response = self
                 .http
-                .post(self.endpoint.clone())
+                .post(endpoint.clone())
                 .bearer_auth(&self.api_key)
                 .json(body)
                 .send()
@@ -471,13 +640,13 @@ fn finalize_research(
     let carried_count = carried.len();
     if candidates.len() + carried_count < REQUIRED_STORIES {
         return Err(GeneratorError::Validation(format!(
-            "only {} novel and {carried_count} carried stories were usable; six are required",
+            "only {} novel and {carried_count} carried stories were usable; four are required",
             candidates.len()
         )));
     }
     let (selected, carried_selected) = select(&candidates, &carried).ok_or_else(|| {
         GeneratorError::Validation(
-            "could not select six stories with at least two outside the dominant provider".into(),
+            "could not select four stories from at least two providers".into(),
         )
     })?;
     let selected_novel = selected.len();
@@ -501,11 +670,11 @@ fn search_request<'a>(
     SearchRequest {
         query: profile.query,
         category: "news",
-        search_type: "auto",
+        search_type: "deep",
         num_results: 10,
         include_domains,
         system_prompt: format!(
-            "Provide results from at least {requested_sources} distinct allowed sources. Avoid duplicate events between sources.\nPrefer consequential current reporting over analysis or opinion"
+            "Return up to 10 distinct individual news articles published inside the requested date range and grounded in exact article URLs from the allowed domains. Prefer {requested_sources} distinct sources when available, but return relevant articles when fewer are available. Avoid duplicate events and prefer consequential current reporting over analysis or opinion. Write every title and summary in English, translating German titles. Summaries must contain 2 short sentences and 30-45 words, must not repeat the title, and must not use labels such as `Title:` or `Summary:`."
         ),
         start_published_date: window.start.to_rfc3339_opts(SecondsFormat::Millis, true),
         end_published_date: window
@@ -513,9 +682,7 @@ fn search_request<'a>(
             .checked_sub_signed(chrono::Duration::milliseconds(1))
             .unwrap_or(window.end)
             .to_rfc3339_opts(SecondsFormat::Millis, true),
-        output_schema: OutputSchema {
-            schema_type: "object",
-        },
+        output_schema: story_output_schema(),
         stream: false,
         contents: Contents {
             summary: Summary {
@@ -524,6 +691,41 @@ fn search_request<'a>(
             max_age_hours: 0,
         },
     }
+}
+
+fn story_output_schema() -> Value {
+    json!({
+        "type": "object",
+        "required": ["stories"],
+        "properties": {
+            "stories": {
+                "type": "array",
+                "maxItems": 10,
+                "items": {
+                    "type": "object",
+                    "required": ["title", "url", "publishedDate", "summary"],
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Concise English newspaper headline; translate German source titles"
+                        },
+                        "url": {
+                            "type": "string",
+                            "description": "Exact canonical URL of the individual source article"
+                        },
+                        "publishedDate": {
+                            "type": "string",
+                            "description": "Article publication timestamp in ISO 8601 format"
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "Two short English sentences totaling 30-45 words without repeating the headline"
+                        }
+                    }
+                }
+            }
+        }
+    })
 }
 
 fn normalize(
@@ -726,7 +928,7 @@ fn log_search_attempt(
         window_start = %window.start.to_rfc3339_opts(SecondsFormat::Millis, true),
         window_end = %window.end.to_rfc3339_opts(SecondsFormat::Millis, true),
         domains = %domains.join(","),
-        returned = response.results.len(),
+        returned = response.research_results().len(),
         usable = normalization.candidates.len(),
         novel = normalization.candidates.len(),
         missing_or_invalid_copy = rejections.missing_or_invalid_copy,
@@ -1317,17 +1519,31 @@ mod tests {
         serde_json::from_str(include_str!("../fixtures/exa-response.json"))
     }
 
+    fn deep_fixture() -> std::result::Result<ExaResponse, serde_json::Error> {
+        serde_json::from_str(include_str!("../fixtures/exa-deep-response.json"))
+    }
+
     fn previous_edition(
         story_count: usize,
     ) -> std::result::Result<EditionV1, Box<dyn std::error::Error>> {
         let research = serde_json::from_str::<ResearchEdition>(include_str!(
             "../fixtures/valid-research.json"
         ))?;
-        let stories = research
-            .stories
-            .iter()
-            .take(story_count)
-            .map(StoryV1::from)
+        if research.stories.is_empty() {
+            return Err("fixture has no stories".into());
+        }
+        let stories = (0..story_count)
+            .filter_map(|index| {
+                let template = research.stories.get(index % research.stories.len())?;
+                let mut story = StoryV1::from(template);
+                if index >= research.stories.len() {
+                    story.id = format!("{}-carry-{index}", story.id);
+                    if let Some(source) = story.sources.first_mut() {
+                        source.url = format!("{}?carry={index}", source.url);
+                    }
+                }
+                Some(story)
+            })
             .collect::<Vec<_>>();
         let story_id = stories
             .first()
@@ -1416,20 +1632,25 @@ mod tests {
         let body = serde_json::to_value(search_request(profile, window, profile.domains))?;
         assert_eq!(body["query"], MORNING_QUERY);
         assert_eq!(body["category"], "news");
-        assert_eq!(body["type"], "auto");
+        assert_eq!(body["type"], "deep");
         assert_eq!(body["numResults"], 10);
         assert_eq!(
             body["includeDomains"],
             json!(["wsj.com", "nytimes.com", "ft.com", "reuters.com"])
         );
-        assert_eq!(
-            body["systemPrompt"],
-            "Provide results from at least 3 distinct allowed sources. Avoid duplicate events between sources.\nPrefer consequential current reporting over analysis or opinion"
+        assert!(
+            body["systemPrompt"]
+                .as_str()
+                .is_some_and(|prompt| prompt.contains("Prefer 3 distinct sources when available"))
         );
         assert_eq!(body["contents"]["summary"]["query"], SUMMARY_PROMPT);
         assert_eq!(body["startPublishedDate"], "2026-08-04T15:00:00.000Z");
         assert_eq!(body["endPublishedDate"], "2026-08-05T04:44:59.999Z");
-        assert_eq!(body["outputSchema"], json!({ "type": "object" }));
+        assert_eq!(body["outputSchema"]["type"], "object");
+        assert_eq!(
+            body["outputSchema"]["properties"]["stories"]["items"]["required"],
+            json!(["title", "url", "publishedDate", "summary"])
+        );
         assert_eq!(body["stream"], false);
         assert_eq!(body["contents"]["maxAgeHours"], 0);
 
@@ -1447,7 +1668,13 @@ mod tests {
         assert_eq!(evening["query"], EVENING_QUERY);
         assert_eq!(
             evening["includeDomains"],
-            json!(["handelsblatt.com", "tagesschau.de", "ft.com", "dw.com"])
+            json!([
+                "handelsblatt.com",
+                "tagesschau.de",
+                "ft.com",
+                "dw.com",
+                "bbc.com"
+            ])
         );
         assert_eq!(evening["startPublishedDate"], "2026-08-04T22:00:00.000Z");
         assert_eq!(evening["endPublishedDate"], "2026-08-05T15:29:59.999Z");
@@ -1484,6 +1711,94 @@ mod tests {
                 .get(1)
                 .is_some_and(|result| result.image.is_none())
         );
+        Ok(())
+    }
+
+    #[test]
+    fn deep_response_uses_only_grounded_structured_stories()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let response = deep_fixture()?;
+        assert!(response.results.is_empty());
+
+        let results = response.research_results();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results.first().map(|result| result.title.as_str()),
+            Some("Allies open urgent regional security talks")
+        );
+        assert_eq!(
+            results.first().and_then(|result| result.image.as_deref()),
+            None
+        );
+        assert_eq!(normalized(&results)?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn enriches_selected_stories_with_exact_cached_image_metadata()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        let mut edition = selected(&fixture()?)?;
+        edition
+            .stories
+            .iter_mut()
+            .for_each(|story| story.image_url = None);
+        let source_url = edition
+            .stories
+            .first()
+            .and_then(|story| story.sources.first())
+            .map(|source| source.url.clone())
+            .ok_or("selected story must have a source")?;
+        Mock::given(method("POST"))
+            .and(path("/contents"))
+            .and(header("authorization", "Bearer test-key"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": [
+                    {
+                        "id": source_url,
+                        "url": source_url,
+                        "image": "https://static.reuters.com/images/resolved.jpg"
+                    },
+                    {
+                        "url": "https://unrequested.example/story",
+                        "image": "https://unrequested.example/image.jpg"
+                    }
+                ]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let base = Url::parse(&format!("{}/", server.uri()))?;
+        let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
+        let enriched = client.enrich_images(&mut edition).await?;
+
+        assert_eq!(enriched, 1);
+        assert_eq!(
+            edition
+                .stories
+                .first()
+                .and_then(|story| story.image_url.as_deref()),
+            Some("https://static.reuters.com/images/resolved.jpg")
+        );
+        assert!(
+            edition
+                .stories
+                .iter()
+                .skip(1)
+                .all(|story| story.image_url.is_none())
+        );
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("request recording is disabled")?;
+        let body = requests
+            .first()
+            .map(|request| serde_json::from_slice::<serde_json::Value>(&request.body))
+            .transpose()?
+            .ok_or("contents request must be recorded")?;
+        assert_eq!(body["maxAgeHours"], -1);
+        assert_eq!(body["urls"].as_array().map(Vec::len), Some(4));
         Ok(())
     }
 
@@ -1615,14 +1930,14 @@ mod tests {
         let expected_carry_ids = previous
             .stories
             .iter()
-            .take(4)
+            .take(2)
             .map(|story| story.id.clone())
             .collect::<Vec<_>>();
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
         let edition = client.research(now()?, Some(&previous)).await?;
 
-        assert_eq!(edition.stories.len(), 6);
+        assert_eq!(edition.stories.len(), 4);
         assert!(
             edition
                 .stories
@@ -1672,7 +1987,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let previous = previous_edition(2)?;
+        let previous = previous_edition(1)?;
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
         let error = client
@@ -1685,7 +2000,7 @@ mod tests {
         };
         assert_eq!(
             message,
-            "only 2 novel and 2 carried stories were usable; six are required"
+            "only 2 novel and 1 carried stories were usable; four are required"
         );
         Ok(())
     }
@@ -1934,11 +2249,11 @@ mod tests {
     }
 
     #[test]
-    fn selects_six_without_turning_preferences_into_blockers()
+    fn selects_four_without_turning_preferences_into_blockers()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let response = fixture()?;
         let edition = selected(&response)?;
-        assert_eq!(edition.stories.len(), 6);
+        assert_eq!(edition.stories.len(), 4);
         assert!(edition.stories.iter().all(|story| story.sources.len() == 1));
         assert!(edition.stories.iter().all(|story| !story.is_developing));
         assert!(
@@ -1947,7 +2262,7 @@ mod tests {
                 .iter()
                 .all(|story| !story.headline.is_empty())
         );
-        assert_eq!(edition.photo_candidates.len(), 6);
+        assert_eq!(edition.photo_candidates.len(), 4);
         assert_eq!(
             edition.photo_candidates.first(),
             edition
@@ -1960,16 +2275,16 @@ mod tests {
     }
 
     #[test]
-    fn selects_all_novel_when_fewer_than_six_survive()
+    fn selects_all_novel_when_fewer_than_four_survive()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut response = fixture()?;
-        response.results.truncate(5);
-        assert_eq!(selected(&response)?.stories.len(), 5);
+        response.results.truncate(3);
+        assert_eq!(selected(&response)?.stories.len(), 3);
         Ok(())
     }
 
     #[test]
-    fn selects_four_two_provider_split_across_novel_and_carried_stories()
+    fn selects_three_one_provider_split_across_novel_and_carried_stories()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let results = (0..5)
             .map(|index| ExaResult {
@@ -1997,8 +2312,8 @@ mod tests {
         let (novel, selected_carries) =
             select(&candidates, &carried).ok_or("provider split was not selected")?;
 
-        assert_eq!(novel.len(), 4);
-        assert_eq!(selected_carries.len(), 2);
+        assert_eq!(novel.len(), 3);
+        assert_eq!(selected_carries.len(), 1);
         assert!(super::provider_split_allowed(&novel, &selected_carries));
         assert!(
             selected_carries
@@ -2009,9 +2324,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_six_story_single_provider_selection()
+    fn rejects_four_story_single_provider_selection()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let results = (0..6)
+        let results = (0..4)
             .map(|index| ExaResult {
                 title: format!("Reuters report {index}"),
                 url: format!("https://www.reuters.com/world/europe/report-{index}"),
@@ -2071,7 +2386,9 @@ mod tests {
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
         let body = request()?;
-        let response = client.send_with_retry(&body).await?;
+        let response = client
+            .send_with_retry::<ExaResponse>(&client.search_endpoint, &body)
+            .await?;
         assert_eq!(response.request_id.as_deref(), Some("retried"));
         let requests = server
             .received_requests()
@@ -2096,7 +2413,7 @@ mod tests {
         let initial_results = initial["results"]
             .as_array_mut()
             .ok_or("fixture results must be an array")?;
-        initial_results.truncate(5);
+        initial_results.truncate(3);
         let mut fallback = serde_json::from_str::<serde_json::Value>(include_str!(
             "../fixtures/exa-response.json"
         ))?;
@@ -2134,14 +2451,14 @@ mod tests {
         );
         assert_eq!(
             bodies.get(1).map(|body| &body["includeDomains"]),
-            Some(&json!(["wsj.com", "nytimes.com", "reuters.com"]))
+            Some(&json!(["nytimes.com", "ft.com", "reuters.com"]))
         );
         assert!(
             bodies
                 .iter()
                 .all(|body| body["contents"]["maxAgeHours"] == 0)
         );
-        assert_eq!(edition.stories.len(), 6);
+        assert_eq!(edition.stories.len(), 4);
         Ok(())
     }
 
@@ -2167,7 +2484,7 @@ mod tests {
             .await
             .ok_or("request recording is disabled")?;
         assert_eq!(requests.len(), 1);
-        assert_eq!(edition.stories.len(), 6);
+        assert_eq!(edition.stories.len(), 4);
         Ok(())
     }
 
@@ -2217,7 +2534,7 @@ mod tests {
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
         let edition = client.research(now()?, None).await?;
-        assert_eq!(edition.stories.len(), 6);
+        assert_eq!(edition.stories.len(), 4);
         let requests = server
             .received_requests()
             .await
@@ -2247,11 +2564,11 @@ mod tests {
             bodies.get(2).map(|body| &body["includeDomains"]),
             Some(&json!(["ft.com", "reuters.com"]))
         );
-        assert_eq!(
-            bodies.get(2).map(|body| &body["systemPrompt"]),
-            Some(&json!(
-                "Provide results from at least 2 distinct allowed sources. Avoid duplicate events between sources.\nPrefer consequential current reporting over analysis or opinion"
-            ))
+        assert!(
+            bodies
+                .get(2)
+                .and_then(|body| body["systemPrompt"].as_str())
+                .is_some_and(|prompt| prompt.contains("Prefer 2 distinct sources when available"))
         );
         Ok(())
     }
@@ -2276,7 +2593,9 @@ mod tests {
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
         let body = request()?;
-        let response = client.send_with_retry(&body).await?;
+        let response = client
+            .send_with_retry::<ExaResponse>(&client.search_endpoint, &body)
+            .await?;
         assert_eq!(response.request_id.as_deref(), Some("server-retried"));
         Ok(())
     }
@@ -2297,7 +2616,11 @@ mod tests {
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
         let body = request()?;
-        let Some(error) = client.send_with_retry(&body).await.err() else {
+        let Some(error) = client
+            .send_with_retry::<ExaResponse>(&client.search_endpoint, &body)
+            .await
+            .err()
+        else {
             return Err("budget error unexpectedly succeeded".into());
         };
         let message = error.to_string();
