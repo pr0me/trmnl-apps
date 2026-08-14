@@ -106,6 +106,15 @@ begin
           .map((element) => `${story.dataset.storyId}:${element.className || element.tagName}`);
       });
     const summaries = Array.from(document.querySelectorAll('.bt-summary'));
+    const baselineGaps = Array.from(document.querySelectorAll('.bt-story--brief, .bt-story--rail'))
+      .map((story) => {
+        const storyBox = story.getBoundingClientRect();
+        const bylineBox = story.querySelector('.bt-byline')?.getBoundingClientRect();
+        return {
+          story: story.dataset.storyId,
+          gap: bylineBox ? storyBox.bottom - bylineBox.bottom : Number.POSITIVE_INFINITY
+        };
+      });
     const borderedStories = Array.from(document.querySelectorAll('.bt-story'))
       .filter((story) => {
         const style = getComputedStyle(story);
@@ -147,6 +156,10 @@ begin
       clampedSummaries: summaries
         .filter((summary) => getComputedStyle(summary).webkitLineClamp !== 'none')
         .map((summary) => summary.closest('[data-story-id]')?.dataset.storyId),
+      clippedSummaries: summaries
+        .filter((summary) => summary.scrollHeight > summary.clientHeight + 1)
+        .map((summary) => summary.closest('[data-story-id]')?.dataset.storyId),
+      baselineGaps,
       clamped: Array.from(document.querySelectorAll('.bt-headline, .bt-summary'))
         .map((element) => {
           const range = document.createRange();
@@ -220,6 +233,14 @@ begin
   end
   unless result['clampedSummaries'].empty?
     failures << "summaries are clamped: #{result['clampedSummaries'].join(', ')}"
+  end
+  if ENV['COPY_VARIANT'] == 'maximum' && result['clippedSummaries'].empty?
+    failures << 'maximum fixture does not exercise summary clipping'
+  end
+  loose_baselines = result['baselineGaps'].select { |baseline| baseline['gap'].to_f.abs > 1 }
+  unless loose_baselines.empty?
+    details = loose_baselines.map { |baseline| "#{baseline['story']}:#{baseline['gap']}" }
+    failures << "bylines do not meet story baseline: #{details.join(', ')}"
   end
   unless result['clamped'].empty?
     details = result['clamped'].map do |clamp|

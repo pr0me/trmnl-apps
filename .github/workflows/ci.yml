@@ -153,10 +153,12 @@ jobs:
 
       - name: Verify rendered layout
         env:
+          COPY_VARIANT: ${{ matrix.copy }}
           LAYOUT_URL: http://host.docker.internal:8000/__plugin__/full.html
         run: >-
           docker run --rm
           --add-host=host.docker.internal:host-gateway
+          -e COPY_VARIANT
           -e LAYOUT_URL
           --entrypoint /usr/local/bin/ruby
           -v "$PWD/apps/berlin-times/plugin:/plugin"

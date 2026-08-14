@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::time::sleep;
-use tracing::info;
+use tracing::{info, warn};
 use url::Url;
 
 use crate::{
@@ -30,6 +30,8 @@ const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const REQUIRED_STORIES: usize = 5;
 const MAX_STORIES_PER_PROVIDER: usize = 3;
 const MAX_SELECTION_CANDIDATES: usize = 18;
+const REUTERS_DOMAINS: &[&str] = &["reuters.com"];
+const MORNING_REUTERS_TARGET: usize = 2;
 const GERMANY_TERMS: &[&str] = &[
     "berlin",
     "germany",
@@ -317,6 +319,8 @@ struct ContentsRequest<'a> {
 struct ContentsResponse {
     #[serde(default)]
     results: Vec<ContentsResult>,
+    #[serde(default)]
+    statuses: Vec<ContentsStatus>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -327,6 +331,25 @@ struct ContentsResult {
     url: Option<String>,
     #[serde(default)]
     image: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContentsStatus {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    error: Option<ContentsStatusError>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContentsStatusError {
+    #[serde(default)]
+    tag: Option<String>,
+    #[serde(default)]
+    http_status_code: Option<u16>,
 }
 
 #[derive(Debug, Serialize)]
@@ -368,7 +391,6 @@ struct SelectionScore {
     primary_window: usize,
     required_categories: usize,
     providers: usize,
-    has_image: bool,
     ranks: Vec<(usize, usize)>,
 }
 
@@ -377,6 +399,12 @@ struct SelectionTarget {
     novel: usize,
     carried: usize,
     require_provider_split: bool,
+}
+
+pub(crate) struct ResearchPool {
+    candidates: Vec<Candidate>,
+    carried: Vec<ResearchStory>,
+    responses: Vec<ExaResponse>,
 }
 
 impl ExaClient {
@@ -401,11 +429,11 @@ impl ExaClient {
         })
     }
 
-    pub async fn research(
+    pub(crate) async fn research_pool(
         &self,
         now: DateTime<Utc>,
         previous: Option<&EditionV1>,
-    ) -> Result<ResearchEdition> {
+    ) -> Result<ResearchPool> {
         let edition_name = edition_name(now);
         let profile = edition_profile(&edition_name);
         let previous_evening_at = previous
@@ -431,6 +459,31 @@ impl ExaClient {
         let mut candidates = initial_normalization.candidates;
         let mut responses = vec![initial];
         let mut current_domains = profile.domains.to_vec();
+        let mut attempt_number = 1;
+
+        if edition_name == EditionName::Morning
+            && candidates
+                .iter()
+                .filter(|candidate| candidate.provider == "Reuters")
+                .count()
+                < MORNING_REUTERS_TARGET
+        {
+            attempt_number += 1;
+            let (reuters, reuters_normalization) = self
+                .supplemental_reuters_search(
+                    profile,
+                    &edition_name,
+                    attempt_number,
+                    window,
+                    &previous_urls,
+                )
+                .await?;
+            merge_candidates(&mut candidates, reuters_normalization.candidates);
+            responses.push(reuters);
+        }
+        if edition_name == EditionName::Morning {
+            log_reuters_target(&candidates);
+        }
 
         if candidates.len() < REQUIRED_STORIES || select(&candidates, &[]).is_none() {
             let initial_results = responses[0].research_results();
@@ -440,17 +493,14 @@ impl ExaClient {
                 &initial_results,
                 &previous_urls,
             );
+            attempt_number += 1;
             let (retry, retry_normalization) = self
-                .semantic_search(
+                .primary_retry_search(
                     profile,
-                    SemanticAttempt {
-                        edition: &edition_name,
-                        number: 2,
-                        window_kind: "primary",
-                        window,
-                        domains: &current_domains,
-                        primary_window: true,
-                    },
+                    &edition_name,
+                    attempt_number,
+                    window,
+                    &current_domains,
                     &previous_urls,
                 )
                 .await?;
@@ -463,28 +513,21 @@ impl ExaClient {
             || candidates.len() + valid_carries.len() < REQUIRED_STORIES
             || select(&candidates, &valid_carries).is_none()
         {
-            let combined_results = responses
-                .iter()
-                .flat_map(ExaResponse::research_results)
-                .collect::<Vec<_>>();
-            let prior_domains = retry_domains(
+            let prior_domains = prior_retry_domains(
                 profile.domains,
                 &current_domains,
-                &combined_results,
+                &responses,
                 &previous_urls,
             );
             let prior_window = prior_day_window(window)?;
+            attempt_number += 1;
             let (prior, prior_normalization) = self
-                .semantic_search(
+                .prior_retry_search(
                     profile,
-                    SemanticAttempt {
-                        edition: &edition_name,
-                        number: 3,
-                        window_kind: "prior_day",
-                        window: prior_window,
-                        domains: &prior_domains,
-                        primary_window: false,
-                    },
+                    &edition_name,
+                    attempt_number,
+                    prior_window,
+                    &prior_domains,
                     &previous_urls,
                 )
                 .await?;
@@ -492,9 +535,42 @@ impl ExaClient {
             responses.push(prior);
         }
 
-        finalize_research(candidates, previous, now, &responses)
+        prepare_research_pool(candidates, previous, now, responses)
     }
 
+    #[cfg(test)]
+    pub async fn research(
+        &self,
+        now: DateTime<Utc>,
+        previous: Option<&EditionV1>,
+    ) -> Result<ResearchEdition> {
+        self.research_pool(now, previous)
+            .await?
+            .finalize_unverified()
+    }
+
+    pub(crate) async fn enrich_pool_images(&self, pool: &mut ResearchPool) -> Result<usize> {
+        let urls = pool
+            .candidates
+            .iter()
+            .map(|candidate| candidate.canonical_url.as_str())
+            .collect::<Vec<_>>();
+        let images = self.image_metadata(urls).await?;
+        let mut enriched = 0;
+        pool.candidates.iter_mut().for_each(|candidate| {
+            if let Some(image) = images.get(&candidate.canonical_url) {
+                candidate.image_url = Some(image.clone());
+                enriched += 1;
+            }
+        });
+        info!(
+            requested = pool.candidates.len(),
+            enriched, "Exa candidate image metadata resolved"
+        );
+        Ok(enriched)
+    }
+
+    #[cfg(test)]
     pub async fn enrich_images(&self, edition: &mut ResearchEdition) -> Result<usize> {
         let urls = edition
             .stories
@@ -507,25 +583,7 @@ impl ExaClient {
             return Ok(0);
         }
         let requested = urls.len();
-        let response = self
-            .send_with_retry::<ContentsResponse>(
-                &self.contents_endpoint,
-                &ContentsRequest {
-                    urls,
-                    max_age_hours: -1,
-                },
-            )
-            .await?;
-        let images = response
-            .results
-            .into_iter()
-            .filter_map(|result| {
-                let source_url = result.url.or(result.id)?;
-                let canonical = canonicalize_url(&source_url).ok()?;
-                let image = result.image.filter(|value| safe_image_url(value))?;
-                Some((canonical, image))
-            })
-            .collect::<HashMap<_, _>>();
+        let images = self.image_metadata(urls).await?;
         let mut enriched = 0;
         edition
             .stories
@@ -544,6 +602,59 @@ impl ExaClient {
             });
         info!(requested, enriched, "Exa image metadata resolved");
         Ok(enriched)
+    }
+
+    async fn image_metadata(&self, urls: Vec<&str>) -> Result<HashMap<String, String>> {
+        if urls.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let response = self
+            .send_with_retry::<ContentsResponse>(
+                &self.contents_endpoint,
+                &ContentsRequest {
+                    urls,
+                    max_age_hours: 0,
+                },
+            )
+            .await?;
+        response
+            .statuses
+            .iter()
+            .filter(|status| status.status == "error")
+            .for_each(|status| {
+                let error_tag = status
+                    .error
+                    .as_ref()
+                    .and_then(|error| error.tag.as_deref())
+                    .unwrap_or("unknown");
+                let http_status_code = status
+                    .error
+                    .as_ref()
+                    .and_then(|error| error.http_status_code);
+                warn!(
+                    source_url = status.id.as_deref().unwrap_or("unknown"),
+                    error_tag, http_status_code, "Exa image metadata candidate failed"
+                );
+            });
+        let failed = response
+            .statuses
+            .iter()
+            .filter(|status| status.status == "error")
+            .count();
+        if failed > 0 {
+            warn!(failed, "Exa image metadata reported candidate failures");
+        }
+        let images = response
+            .results
+            .into_iter()
+            .filter_map(|result| {
+                let source_url = result.url.or(result.id)?;
+                let canonical = canonicalize_url(&source_url).ok()?;
+                let image = result.image.filter(|value| safe_image_url(value))?;
+                Some((canonical, image))
+            })
+            .collect::<HashMap<_, _>>();
+        Ok(images)
     }
 
     async fn semantic_search(
@@ -575,6 +686,77 @@ impl ExaClient {
             &normalization,
         );
         Ok((response, normalization))
+    }
+
+    async fn supplemental_reuters_search(
+        &self,
+        profile: EditionProfile,
+        edition: &EditionName,
+        number: usize,
+        window: PublicationWindow,
+        previous_urls: &HashSet<String>,
+    ) -> Result<(ExaResponse, Normalization)> {
+        self.semantic_search(
+            profile,
+            SemanticAttempt {
+                edition,
+                number,
+                window_kind: "primary_reuters",
+                window,
+                domains: REUTERS_DOMAINS,
+                primary_window: true,
+            },
+            previous_urls,
+        )
+        .await
+    }
+
+    async fn primary_retry_search(
+        &self,
+        profile: EditionProfile,
+        edition: &EditionName,
+        number: usize,
+        window: PublicationWindow,
+        domains: &[&'static str],
+        previous_urls: &HashSet<String>,
+    ) -> Result<(ExaResponse, Normalization)> {
+        self.semantic_search(
+            profile,
+            SemanticAttempt {
+                edition,
+                number,
+                window_kind: "primary",
+                window,
+                domains,
+                primary_window: true,
+            },
+            previous_urls,
+        )
+        .await
+    }
+
+    async fn prior_retry_search(
+        &self,
+        profile: EditionProfile,
+        edition: &EditionName,
+        number: usize,
+        window: PublicationWindow,
+        domains: &[&'static str],
+        previous_urls: &HashSet<String>,
+    ) -> Result<(ExaResponse, Normalization)> {
+        self.semantic_search(
+            profile,
+            SemanticAttempt {
+                edition,
+                number,
+                window_kind: "prior_day",
+                window,
+                domains,
+                primary_window: false,
+            },
+            previous_urls,
+        )
+        .await
     }
 
     async fn send_with_retry<Response>(
@@ -623,12 +805,12 @@ impl ExaClient {
     }
 }
 
-fn finalize_research(
+fn prepare_research_pool(
     mut candidates: Vec<Candidate>,
     previous: Option<&EditionV1>,
     now: DateTime<Utc>,
-    responses: &[ExaResponse],
-) -> Result<ResearchEdition> {
+    responses: Vec<ExaResponse>,
+) -> Result<ResearchPool> {
     if candidates.is_empty() {
         return Err(GeneratorError::Validation(
             "exa returned no novel usable stories after the prior-day fallback; refusing to publish without a fresh lead"
@@ -644,21 +826,85 @@ fn finalize_research(
             candidates.len()
         )));
     }
-    let (selected, carried_selected) = select(&candidates, &carried).ok_or_else(|| {
+    select(&candidates, &carried).ok_or_else(|| {
         GeneratorError::Validation(
             "could not select five stories from at least two providers".into(),
         )
     })?;
-    let selected_novel = selected.len();
-    let selected_carried = carried_selected.len();
-    let mut stories = build_stories(selected);
-    stories.extend(carried_selected.into_iter().cloned());
-    let research = ResearchEdition {
-        photo_candidates: photo_candidates(&stories),
-        stories,
-    };
-    log_selection(&research, responses, selected_novel, selected_carried);
-    Ok(research)
+    Ok(ResearchPool {
+        candidates,
+        carried,
+        responses,
+    })
+}
+
+impl ResearchPool {
+    pub(crate) fn candidate_stories(&self) -> Vec<ResearchStory> {
+        self.candidates.iter().map(candidate_story).collect()
+    }
+
+    pub(crate) fn finalize_with_photos(
+        self,
+        photographed_story_ids: &HashSet<String>,
+    ) -> Result<(ResearchEdition, String)> {
+        let selection = self
+            .candidates
+            .iter()
+            .filter_map(|candidate| {
+                let story_id = story_id(&candidate.title, &candidate.canonical_url);
+                photographed_story_ids.contains(&story_id).then(|| {
+                    select_scored(
+                        &self.candidates,
+                        &self.carried,
+                        Some(&candidate.canonical_url),
+                    )
+                    .map(|selection| (selection, story_id))
+                })?
+            })
+            .reduce(|best, candidate| {
+                if candidate.0.0.better_than(&best.0.0) {
+                    candidate
+                } else {
+                    best
+                }
+            })
+            .ok_or_else(|| {
+                GeneratorError::NoPhoto(
+                    "no photographed candidate can anchor a valid five-story edition".into(),
+                )
+            })?;
+        let ((_, selected, carried_selected), lead_story_id) = selection;
+        let research = self.build_research(selected, carried_selected);
+        Ok((research, lead_story_id))
+    }
+
+    #[cfg(test)]
+    fn finalize_unverified(self) -> Result<ResearchEdition> {
+        let (_, selected, carried_selected) = select_scored(&self.candidates, &self.carried, None)
+            .ok_or_else(|| {
+                GeneratorError::Validation(
+                    "could not select five stories from at least two providers".into(),
+                )
+            })?;
+        Ok(self.build_research(selected, carried_selected))
+    }
+
+    fn build_research(
+        &self,
+        selected: Vec<&Candidate>,
+        carried_selected: Vec<&ResearchStory>,
+    ) -> ResearchEdition {
+        let selected_novel = selected.len();
+        let selected_carried = carried_selected.len();
+        let mut stories = build_stories(selected);
+        stories.extend(carried_selected.into_iter().cloned());
+        let research = ResearchEdition {
+            photo_candidates: photo_candidates(&stories),
+            stories,
+        };
+        log_selection(&research, &self.responses, selected_novel, selected_carried);
+        research
+    }
 }
 
 fn search_request<'a>(
@@ -911,6 +1157,37 @@ fn retry_domains(
     remaining
 }
 
+fn prior_retry_domains(
+    profile_domains: &[&'static str],
+    current_domains: &[&'static str],
+    responses: &[ExaResponse],
+    previous_urls: &HashSet<String>,
+) -> Vec<&'static str> {
+    let combined_results = responses
+        .iter()
+        .flat_map(ExaResponse::research_results)
+        .collect::<Vec<_>>();
+    retry_domains(
+        profile_domains,
+        current_domains,
+        &combined_results,
+        previous_urls,
+    )
+}
+
+fn log_reuters_target(candidates: &[Candidate]) {
+    let reuters_candidates = candidates
+        .iter()
+        .filter(|candidate| candidate.provider == "Reuters")
+        .count();
+    info!(
+        reuters_candidates,
+        target = MORNING_REUTERS_TARGET,
+        target_met = reuters_candidates >= MORNING_REUTERS_TARGET,
+        "morning Reuters candidate target evaluated"
+    );
+}
+
 fn log_search_attempt(
     edition: &EditionName,
     attempt: usize,
@@ -990,6 +1267,14 @@ fn select<'a>(
     candidates: &'a [Candidate],
     carried: &'a [ResearchStory],
 ) -> Option<(Vec<&'a Candidate>, Vec<&'a ResearchStory>)> {
+    select_scored(candidates, carried, None).map(|(_, novel, carried)| (novel, carried))
+}
+
+fn select_scored<'a>(
+    candidates: &'a [Candidate],
+    carried: &'a [ResearchStory],
+    required_url: Option<&str>,
+) -> Option<(SelectionScore, Vec<&'a Candidate>, Vec<&'a ResearchStory>)> {
     let target = REQUIRED_STORIES.min(candidates.len() + carried.len());
     let maximum_novel = target.min(candidates.len());
     for novel_target in (1..=maximum_novel).rev() {
@@ -1010,9 +1295,10 @@ fn select<'a>(
             0,
             &mut current,
             &mut best,
+            required_url,
         );
-        if let Some((_, novel, carried)) = best {
-            return Some((novel, carried));
+        if let Some(selection) = best {
+            return Some(selection);
         }
     }
     None
@@ -1025,8 +1311,16 @@ fn enumerate_novel_subsets<'a>(
     start: usize,
     current: &mut Vec<&'a Candidate>,
     best: &mut Option<(SelectionScore, Vec<&'a Candidate>, Vec<&'a ResearchStory>)>,
+    required_url: Option<&str>,
 ) {
     if current.len() == target.novel {
+        if required_url.is_some_and(|required| {
+            !current
+                .iter()
+                .any(|candidate| candidate.canonical_url == required)
+        }) {
+            return;
+        }
         let Some(selected_carries) = select_carries(
             current,
             carried,
@@ -1050,7 +1344,15 @@ fn enumerate_novel_subsets<'a>(
     }
     (start..candidates.len()).for_each(|index| {
         current.push(&candidates[index]);
-        enumerate_novel_subsets(candidates, carried, target, index + 1, current, best);
+        enumerate_novel_subsets(
+            candidates,
+            carried,
+            target,
+            index + 1,
+            current,
+            best,
+            required_url,
+        );
         let _removed = current.pop();
     });
 }
@@ -1148,9 +1450,6 @@ fn selection_score(candidates: &[&Candidate]) -> SelectionScore {
             .count(),
         required_categories,
         providers,
-        has_image: candidates
-            .iter()
-            .any(|candidate| candidate.image_url.is_some()),
         ranks: candidates.iter().map(|candidate| candidate.rank).collect(),
     }
 }
@@ -1161,34 +1460,34 @@ impl SelectionScore {
             .cmp(&other.primary_window)
             .then_with(|| self.required_categories.cmp(&other.required_categories))
             .then_with(|| self.providers.cmp(&other.providers))
-            .then_with(|| self.has_image.cmp(&other.has_image))
             .then_with(|| other.ranks.cmp(&self.ranks))
             == Ordering::Greater
     }
 }
 
 fn build_stories(selected: Vec<&Candidate>) -> Vec<ResearchStory> {
-    selected
-        .into_iter()
-        .map(|candidate| ResearchStory {
-            id: story_id(&candidate.title, &candidate.canonical_url),
-            primary_category: candidate
-                .categories
-                .first()
-                .cloned()
-                .unwrap_or(Category::World),
-            is_developing: false,
-            headline: candidate.title.clone(),
-            summary: fit_summary(&candidate.summary, 60),
-            published_at: candidate.published_at,
-            sources: vec![ResearchSource {
-                name: candidate.provider.into(),
-                url: candidate.canonical_url.clone(),
-            }],
-            image_url: candidate.image_url.clone(),
-            is_carried: false,
-        })
-        .collect()
+    selected.into_iter().map(candidate_story).collect()
+}
+
+fn candidate_story(candidate: &Candidate) -> ResearchStory {
+    ResearchStory {
+        id: story_id(&candidate.title, &candidate.canonical_url),
+        primary_category: candidate
+            .categories
+            .first()
+            .cloned()
+            .unwrap_or(Category::World),
+        is_developing: false,
+        headline: candidate.title.clone(),
+        summary: fit_summary(&candidate.summary, 60),
+        published_at: candidate.published_at,
+        sources: vec![ResearchSource {
+            name: candidate.provider.into(),
+            url: candidate.canonical_url.clone(),
+        }],
+        image_url: candidate.image_url.clone(),
+        is_carried: false,
+    }
 }
 
 fn photo_candidates(stories: &[ResearchStory]) -> Vec<String> {
@@ -1487,14 +1786,14 @@ mod tests {
     use url::Url;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{header, method, path},
+        matchers::{body_partial_json, header, method, path},
     };
 
     use super::{
         EVENING_QUERY, ExaClient, ExaResponse, ExaResult, MORNING_QUERY, SUMMARY_PROMPT,
-        build_stories, carried_story, carry_candidates, classify, edition_profile, fit_summary,
-        merge_candidates, normalize, order_and_limit_candidates, parse_error_response,
-        photo_candidates, retry_domains, search_request, select,
+        build_stories, candidate_story, carried_story, carry_candidates, classify, edition_profile,
+        fit_summary, merge_candidates, normalize, order_and_limit_candidates, parse_error_response,
+        photo_candidates, prepare_research_pool, retry_domains, search_request, select,
     };
     use crate::model::{Category, EditionName, EditionV1, LeadImageV1, ResearchEdition, StoryV1};
     use crate::schedule::{berlin_day, prior_day_window, publication_window};
@@ -1626,7 +1925,7 @@ mod tests {
         assert_eq!(body["numResults"], 10);
         assert_eq!(
             body["includeDomains"],
-            json!(["wsj.com", "nytimes.com", "ft.com", "reuters.com"])
+            json!(["wsj.com", "nytimes.com", "ft.com", "reuters.com", "bbc.com"])
         );
         assert!(
             body["systemPrompt"]
@@ -1787,8 +2086,120 @@ mod tests {
             .map(|request| serde_json::from_slice::<serde_json::Value>(&request.body))
             .transpose()?
             .ok_or("contents request must be recorded")?;
-        assert_eq!(body["maxAgeHours"], -1);
+        assert_eq!(body["maxAgeHours"], 0);
         assert_eq!(body["urls"].as_array().map(Vec::len), Some(5));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn supplements_morning_pool_when_initial_results_are_below_reuters_target()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        let mut initial_results = novel_results(4);
+        initial_results.push(json!({
+            "title": "Initial Reuters report",
+            "url": "https://www.reuters.com/world/europe/initial-report-2026-08-05",
+            "publishedDate": "2026-08-05T01:00:00Z",
+            "summary": "Initial Reuters report contains enough safe copy for deterministic selection and candidate-wide image verification."
+        }));
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .and(body_partial_json(json!({
+                "includeDomains": ["wsj.com", "nytimes.com", "ft.com", "reuters.com", "bbc.com"]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "requestId": "initial-below-reuters-target",
+                "results": initial_results
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/search"))
+            .and(body_partial_json(json!({ "includeDomains": ["reuters.com"] })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "requestId": "reuters-supplement",
+                "results": [{
+                    "title": "Reuters supplemental report",
+                    "url": "https://www.reuters.com/world/europe/supplemental-report-2026-08-05",
+                    "publishedDate": "2026-08-05T01:00:00Z",
+                    "summary": "Reuters supplemental report contains enough safe copy for deterministic selection and candidate-wide image verification."
+                }]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/contents"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "results": [],
+                "statuses": []
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let base = Url::parse(&format!("{}/", server.uri()))?;
+        let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
+        let mut pool = client.research_pool(now()?, None).await?;
+        let candidate_count = pool.candidates.len();
+        assert_eq!(candidate_count, 6);
+        assert_eq!(
+            pool.candidates
+                .iter()
+                .filter(|candidate| candidate.provider == "Reuters")
+                .count(),
+            2
+        );
+
+        client.enrich_pool_images(&mut pool).await?;
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("request recording is disabled")?;
+        let contents = requests
+            .iter()
+            .find(|request| request.url.path() == "/contents")
+            .map(|request| serde_json::from_slice::<serde_json::Value>(&request.body))
+            .transpose()?
+            .ok_or("contents request must be recorded")?;
+        assert_eq!(
+            contents["urls"].as_array().map(Vec::len),
+            Some(candidate_count)
+        );
+        assert_eq!(contents["maxAgeHours"], 0);
+        Ok(())
+    }
+
+    #[test]
+    fn photographed_lower_rank_candidate_anchors_final_selection()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let candidates = normalized(
+            &novel_results(6)
+                .into_iter()
+                .map(serde_json::from_value::<ExaResult>)
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+        )?;
+        let photographed_story_id = candidates
+            .last()
+            .map(candidate_story)
+            .map(|story| story.id)
+            .ok_or("candidate pool must not be empty")?;
+        let pool = prepare_research_pool(candidates, None, now()?, Vec::new())?;
+        let photographed = [photographed_story_id.clone()]
+            .into_iter()
+            .collect::<HashSet<_>>();
+
+        let (edition, lead_story_id) = pool.finalize_with_photos(&photographed)?;
+
+        assert_eq!(lead_story_id, photographed_story_id);
+        assert!(
+            edition
+                .stories
+                .iter()
+                .any(|story| story.id == photographed_story_id)
+        );
+        assert_eq!(edition.stories.len(), 5);
         Ok(())
     }
 
@@ -1913,7 +2324,7 @@ mod tests {
                 "requestId": "two-novel",
                 "results": novel_results(2)
             })))
-            .expect(2)
+            .expect(3)
             .mount(&server)
             .await;
         let previous = previous_edition(6)?;
@@ -1950,7 +2361,7 @@ mod tests {
             .received_requests()
             .await
             .ok_or("request recording is disabled")?;
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         Ok(())
     }
 
@@ -1964,8 +2375,8 @@ mod tests {
                 "requestId": "two-novel",
                 "results": novel_results(2)
             })))
-            .up_to_n_times(2)
-            .expect(2)
+            .up_to_n_times(3)
+            .expect(3)
             .mount(&server)
             .await;
         Mock::given(method("POST"))
@@ -2005,7 +2416,7 @@ mod tests {
                 "requestId": "empty",
                 "results": []
             })))
-            .expect(3)
+            .expect(4)
             .mount(&server)
             .await;
         let base = Url::parse(&format!("{}/", server.uri()))?;
@@ -2171,17 +2582,17 @@ mod tests {
         .collect::<HashSet<_>>();
         assert_eq!(
             retry_domains(profile.domains, profile.domains, &results, &previous),
-            ["wsj.com", "nytimes.com"]
+            ["wsj.com", "nytimes.com", "bbc.com"]
         );
 
         let no_previous = HashSet::new();
         assert_eq!(
             retry_domains(profile.domains, profile.domains, &results, &no_previous),
-            ["wsj.com", "nytimes.com", "ft.com"]
+            ["wsj.com", "nytimes.com", "ft.com", "bbc.com"]
         );
         assert_eq!(
             retry_domains(profile.domains, profile.domains, &[], &no_previous),
-            ["nytimes.com", "ft.com", "reuters.com"]
+            ["nytimes.com", "ft.com", "reuters.com", "bbc.com"]
         );
         assert_eq!(
             retry_domains(
@@ -2403,7 +2814,12 @@ mod tests {
         let initial_results = initial["results"]
             .as_array_mut()
             .ok_or("fixture results must be an array")?;
-        initial_results.truncate(3);
+        let second_reuters = initial_results
+            .get(9)
+            .cloned()
+            .ok_or("fixture must contain second Reuters story")?;
+        initial_results.truncate(2);
+        initial_results.push(second_reuters);
         let mut fallback = serde_json::from_str::<serde_json::Value>(include_str!(
             "../fixtures/exa-response.json"
         ))?;
@@ -2437,11 +2853,17 @@ mod tests {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         assert_eq!(
             bodies.first().map(|body| &body["includeDomains"]),
-            Some(&json!(["wsj.com", "nytimes.com", "ft.com", "reuters.com"]))
+            Some(&json!([
+                "wsj.com",
+                "nytimes.com",
+                "ft.com",
+                "reuters.com",
+                "bbc.com"
+            ]))
         );
         assert_eq!(
             bodies.get(1).map(|body| &body["includeDomains"]),
-            Some(&json!(["nytimes.com", "ft.com", "reuters.com"]))
+            Some(&json!(["wsj.com", "nytimes.com", "ft.com", "bbc.com"]))
         );
         assert!(
             bodies
@@ -2482,7 +2904,7 @@ mod tests {
     async fn uses_adjacent_prior_day_window_after_combined_shortfall()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let server = MockServer::start().await;
-        for request_id in ["initial-empty", "retry-empty"] {
+        for request_id in ["initial-empty", "reuters-empty", "retry-empty"] {
             Mock::given(method("POST"))
                 .and(path("/search"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -2529,7 +2951,7 @@ mod tests {
             .received_requests()
             .await
             .ok_or("request recording is disabled")?;
-        assert_eq!(requests.len(), 3);
+        assert_eq!(requests.len(), 4);
         let bodies = requests
             .iter()
             .map(|request| serde_json::from_slice::<serde_json::Value>(&request.body))
@@ -2543,22 +2965,22 @@ mod tests {
             bodies.first().map(|body| &body["startPublishedDate"])
         );
         assert_eq!(
-            bodies.get(2).map(|body| &body["startPublishedDate"]),
+            bodies.get(3).map(|body| &body["startPublishedDate"]),
             Some(&json!("2026-08-03T22:00:00.000Z"))
         );
         assert_eq!(
-            bodies.get(2).map(|body| &body["endPublishedDate"]),
+            bodies.get(3).map(|body| &body["endPublishedDate"]),
             Some(&json!("2026-08-04T14:59:59.999Z"))
         );
         assert_eq!(
-            bodies.get(2).map(|body| &body["includeDomains"]),
-            Some(&json!(["ft.com", "reuters.com"]))
+            bodies.get(3).map(|body| &body["includeDomains"]),
+            Some(&json!(["ft.com", "reuters.com", "bbc.com"]))
         );
         assert!(
             bodies
-                .get(2)
+                .get(3)
                 .and_then(|body| body["systemPrompt"].as_str())
-                .is_some_and(|prompt| prompt.contains("Prefer 2 distinct sources when available"))
+                .is_some_and(|prompt| prompt.contains("Prefer 3 distinct sources when available"))
         );
         Ok(())
     }
@@ -2625,7 +3047,6 @@ mod tests {
             primary_window: 6,
             required_categories: 1,
             providers: 1,
-            has_image: false,
             ranks: vec![(0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5)],
         };
         let second = super::SelectionScore {
@@ -2642,35 +3063,26 @@ mod tests {
             primary_window: 6,
             required_categories: 1,
             providers: 1,
-            has_image: false,
             ranks: vec![(0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5)],
         };
         let category = super::SelectionScore {
             primary_window: 6,
             required_categories: 2,
             providers: 0,
-            has_image: false,
             ranks: vec![(0, 4), (0, 5), (0, 6), (0, 7), (0, 8), (0, 9)],
         };
         let provider = super::SelectionScore {
             providers: 2,
             ..baseline.clone()
         };
-        let image = super::SelectionScore {
-            has_image: true,
-            ..baseline.clone()
-        };
         let prior_day = super::SelectionScore {
             primary_window: 5,
             required_categories: 4,
             providers: 3,
-            has_image: true,
             ranks: vec![(0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (2, 0)],
         };
         assert!(category.better_than(&baseline));
         assert!(provider.better_than(&baseline));
-        assert!(image.better_than(&baseline));
         assert!(baseline.better_than(&prior_day));
-        assert!(provider.better_than(&image));
     }
 }

@@ -4,18 +4,21 @@ use std::{
     time::Duration,
 };
 
-use futures_util::StreamExt;
+use futures_util::{StreamExt, stream};
 use image::{DynamicImage, ImageReader, codecs::jpeg::JpegEncoder, imageops::FilterType};
 use reqwest::header;
 use scraper::{Html, Selector};
 use tokio::net::lookup_host;
-use tracing::warn;
+use tracing::{info, warn};
 use url::Url;
 
 use crate::{
     error::{GeneratorError, Result},
-    model::{ResearchEdition, ResearchStory},
+    model::ResearchStory,
 };
+
+#[cfg(test)]
+use crate::model::ResearchEdition;
 
 const MAX_REDIRECTS: usize = 5;
 const MAX_PAGE_BYTES: usize = 2 * 1024 * 1024;
@@ -26,6 +29,9 @@ const OUTPUT_HEIGHT: u32 = 734;
 const PLACEHOLDER_SAMPLE_SIZE: u32 = 64;
 const PLACEHOLDER_DOMINANT_RATIO: f64 = 0.72;
 const PLACEHOLDER_MAX_ENTROPY: f64 = 1.8;
+const PHOTO_CONCURRENCY: usize = 4;
+const PHOTO_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+const PHOTO_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
 
 #[derive(Debug)]
 pub struct PhotoAsset {
@@ -57,6 +63,7 @@ impl SafeHttp {
         }
     }
 
+    #[cfg(test)]
     pub async fn build_lead_photo(&self, edition: &ResearchEdition) -> Result<PhotoAsset> {
         let mut failures = Vec::new();
         let candidates = edition
@@ -82,31 +89,89 @@ impl SafeHttp {
             ));
         }
 
-        for (story, source) in candidates {
-            if let Some(image_url) = story.image_url.as_deref() {
-                match self
-                    .photo_from_image(story, &source.name, &source.url, image_url)
-                    .await
-                {
-                    Ok(photo) => return Ok(photo),
-                    Err(error) => {
-                        warn!(story_id = %story.id, image_url, %error, "Exa image candidate rejected");
-                        failures.push(format!("{} direct image: {error}", story.id));
-                    }
-                }
-            }
-            match self
-                .photo_from_source(story, &source.name, &source.url)
-                .await
-            {
+        for (story, _) in candidates {
+            match self.build_story_photo(story).await {
                 Ok(photo) => return Ok(photo),
                 Err(error) => {
-                    warn!(story_id = %story.id, source_url = %source.url, %error, "photo candidate rejected");
-                    failures.push(format!("{} via {}: {error}", story.id, source.name));
+                    warn!(story_id = %story.id, %error, "photo candidate rejected");
+                    failures.push(format!("{}: {error}", story.id));
                 }
             }
         }
         Err(GeneratorError::NoPhoto(failures.join("; ")))
+    }
+
+    pub(crate) async fn build_candidate_photos(
+        &self,
+        stories: &[ResearchStory],
+    ) -> Result<Vec<PhotoAsset>> {
+        let results = stream::iter(stories.iter().cloned())
+            .map(|story| {
+                let http = self.clone();
+                async move {
+                    let result = http.build_story_photo(&story).await;
+                    (story.id, result)
+                }
+            })
+            .buffer_unordered(PHOTO_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        let mut failures = Vec::new();
+        let photos = results
+            .into_iter()
+            .filter_map(|(story_id, result)| match result {
+                Ok(photo) => Some(photo),
+                Err(error) => {
+                    warn!(%story_id, %error, "photo candidate rejected");
+                    failures.push(format!("{story_id}: {error}"));
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        info!(
+            candidates = stories.len(),
+            usable = photos.len(),
+            rejected = failures.len(),
+            "candidate photographs verified"
+        );
+        if photos.is_empty() {
+            return Err(GeneratorError::NoPhoto(failures.join("; ")));
+        }
+        Ok(photos)
+    }
+
+    async fn build_story_photo(&self, story: &ResearchStory) -> Result<PhotoAsset> {
+        let source = story
+            .sources
+            .first()
+            .ok_or_else(|| GeneratorError::NoPhoto("story has no source".into()))?;
+        let mut direct_failure = None;
+        if let Some(image_url) = story.image_url.as_deref() {
+            match self
+                .photo_from_image(story, &source.name, &source.url, image_url)
+                .await
+            {
+                Ok(photo) => return Ok(photo),
+                Err(error) => {
+                    warn!(story_id = %story.id, image_url, %error, "Exa image candidate rejected");
+                    direct_failure = Some(error.to_string());
+                }
+            }
+        }
+        if metadata_only_source(&source.name) {
+            return Err(GeneratorError::NoPhoto(direct_failure.map_or_else(
+                || "publisher requires direct image metadata".into(),
+                |error| format!("direct image failed: {error}"),
+            )));
+        }
+        self.photo_from_source(story, &source.name, &source.url)
+            .await
+            .map_err(|error| {
+                GeneratorError::NoPhoto(direct_failure.map_or_else(
+                    || error.to_string(),
+                    |direct| format!("direct image failed: {direct}; source page failed: {error}"),
+                ))
+            })
     }
 
     async fn photo_from_image(
@@ -208,6 +273,8 @@ impl SafeHttp {
             let response = client
                 .get(url.clone())
                 .header(header::ACCEPT, accept)
+                .header(header::USER_AGENT, PHOTO_USER_AGENT)
+                .header(header::ACCEPT_LANGUAGE, PHOTO_ACCEPT_LANGUAGE)
                 .send()
                 .await?;
             if response.status().is_redirection() {
@@ -276,6 +343,8 @@ async fn fetch_for_test(
     let response = client
         .get(url.clone())
         .header(header::ACCEPT, accept)
+        .header(header::USER_AGENT, PHOTO_USER_AGENT)
+        .header(header::ACCEPT_LANGUAGE, PHOTO_ACCEPT_LANGUAGE)
         .send()
         .await?;
     if !response.status().is_success() {
@@ -403,6 +472,13 @@ fn meta_content(document: &Html, attribute: &str, value: &str) -> Option<String>
         .map(Into::into)
 }
 
+fn metadata_only_source(source_name: &str) -> bool {
+    matches!(
+        source_name,
+        "Financial Times" | "The New York Times" | "The Wall Street Journal"
+    )
+}
+
 async fn client_for_public_url(url: &Url) -> Result<reqwest::Client> {
     if url.scheme() != "https" {
         return Err(GeneratorError::UnsafeUrl(
@@ -464,7 +540,6 @@ fn http_client_builder() -> reqwest::ClientBuilder {
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(18))
-        .user_agent("berlin-times/0.1")
 }
 
 fn is_public_ip(address: IpAddr) -> bool {
@@ -515,7 +590,10 @@ mod tests {
         matchers::{method, path},
     };
 
-    use super::{SafeHttp, is_public_ip, meta_content, process_image};
+    use super::{
+        PHOTO_ACCEPT_LANGUAGE, PHOTO_USER_AGENT, SafeHttp, is_public_ip, meta_content,
+        process_image,
+    };
     use crate::model::{Category, ResearchEdition, ResearchSource, ResearchStory};
 
     fn image_bytes() -> Vec<u8> {
@@ -638,6 +716,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn verifies_every_candidate_before_selection()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        for image_path in ["/first", "/second"] {
+            Mock::given(method("GET"))
+                .and(path(image_path))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("Content-Type", "image/x-portable-pixmap")
+                        .set_body_bytes(image_bytes()),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let mut edition = edition(&server, Some("/first"));
+        let mut second = edition
+            .stories
+            .first()
+            .cloned()
+            .ok_or("test edition must contain story")?;
+        second.id = "second-story".into();
+        second.image_url = Some(format!("{}/second", server.uri()));
+        edition.stories.push(second);
+
+        let photos = test_http().build_candidate_photos(&edition.stories).await?;
+
+        assert_eq!(photos.len(), 2);
+        assert!(photos.iter().any(|photo| photo.story_id == "test-story"));
+        assert!(photos.iter().any(|photo| photo.story_id == "second-story"));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn falls_back_to_open_graph_after_invalid_exa_image()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let server = MockServer::start().await;
@@ -675,6 +787,59 @@ mod tests {
             .build_lead_photo(&edition(&server, Some("/invalid")))
             .await?;
         assert_eq!(photo.story_id, "test-story");
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("request recording is disabled")?;
+        let article = requests
+            .iter()
+            .find(|request| request.url.path() == "/article")
+            .ok_or("article request must be recorded")?;
+        assert_eq!(
+            article
+                .headers
+                .get("user-agent")
+                .and_then(|value| value.to_str().ok()),
+            Some(PHOTO_USER_AGENT)
+        );
+        assert_eq!(
+            article
+                .headers
+                .get("accept-language")
+                .and_then(|value| value.to_str().ok()),
+            Some(PHOTO_ACCEPT_LANGUAGE)
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn does_not_scrape_metadata_only_publishers_without_direct_image()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/article"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                "<meta property=\"og:image\" content=\"/image\">",
+                "text/html",
+            ))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let mut edition = edition(&server, None);
+        let source = edition
+            .stories
+            .first_mut()
+            .and_then(|story| story.sources.first_mut())
+            .ok_or("test story must have source")?;
+        source.name = "Financial Times".into();
+
+        let result = test_http().build_candidate_photos(&edition.stories).await;
+
+        assert!(
+            result
+                .err()
+                .is_some_and(|error| error.to_string().contains("direct image metadata"))
+        );
         Ok(())
     }
 

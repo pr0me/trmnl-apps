@@ -7,6 +7,7 @@ mod site;
 pub mod validate;
 
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -17,9 +18,9 @@ use url::Url;
 
 use crate::{
     error::{GeneratorError, Result, io_error},
-    exa::{ExaClient, fit_summary},
+    exa::ExaClient,
     model::{EditionV1, ResearchEdition},
-    photo::{SafeHttp, fixture_photo},
+    photo::{PhotoAsset, SafeHttp, fixture_photo},
 };
 
 pub struct GenerateOptions {
@@ -43,15 +44,14 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
     } else {
         fetch_previous_edition(&options.public_base_url).await
     };
-    let mut research = if let Some(path) = &options.fixture {
-        read_fixture(path).await?
-    } else {
-        research_live(options, previous.as_ref()).await?
-    };
-    validate_result(&research, options.at)?;
-
-    let photo = if let Some(path) = &options.fixture_image {
-        let bytes = tokio::fs::read(path).await.map_err(io_error(path))?;
+    let (mut research, photo) = if let Some(path) = &options.fixture {
+        let research = read_fixture(path).await?;
+        let image_path = options.fixture_image.as_ref().ok_or_else(|| {
+            GeneratorError::Config("--fixture-image is required with --fixture".into())
+        })?;
+        let bytes = tokio::fs::read(image_path)
+            .await
+            .map_err(io_error(image_path))?;
         let candidate = research
             .photo_candidates
             .iter()
@@ -64,14 +64,12 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
             .sources
             .first()
             .ok_or_else(|| GeneratorError::Config("fixture photo story has no source".into()))?;
-        fixture_photo(&bytes, candidate, &source.name, &source.url)?
-    } else if options.fixture.is_some() {
-        return Err(GeneratorError::Config(
-            "--fixture-image is required with --fixture".into(),
-        ));
+        let photo = fixture_photo(&bytes, candidate, &source.name, &source.url)?;
+        (research, photo)
     } else {
-        SafeHttp::new().build_lead_photo(&research).await?
+        research_live(options, previous.as_ref()).await?
     };
+    validate_result(&research, options.at)?;
 
     let rail_story_id = String::from(longest_summary_story_id_excluding(
         &research,
@@ -83,7 +81,6 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
         rail_story_id = %rail_story_id,
         "edition layout roles assigned"
     );
-    fit_layout_summaries(&mut research);
     validate_result(&research, options.at)?;
 
     let (edition, photo_name) =
@@ -96,7 +93,7 @@ pub async fn generate(options: &GenerateOptions) -> Result<EditionV1> {
 async fn research_live(
     options: &GenerateOptions,
     previous: Option<&EditionV1>,
-) -> Result<ResearchEdition> {
+) -> Result<(ResearchEdition, PhotoAsset)> {
     let api_key = options
         .api_key
         .clone()
@@ -106,11 +103,24 @@ async fn research_live(
         .timeout(Duration::from_secs(60))
         .build()?;
     let client = ExaClient::new(http, &options.api_base, api_key)?;
-    let mut research = client.research(options.at, previous).await?;
-    if let Err(error) = client.enrich_images(&mut research).await {
+    let mut pool = client.research_pool(options.at, previous).await?;
+    if let Err(error) = client.enrich_pool_images(&mut pool).await {
         warn!(%error, "Exa image metadata could not be resolved");
     }
-    Ok(research)
+    let candidates = pool.candidate_stories();
+    let photos = SafeHttp::new().build_candidate_photos(&candidates).await?;
+    let photographed_story_ids = photos
+        .iter()
+        .map(|photo| photo.story_id.clone())
+        .collect::<HashSet<_>>();
+    let (research, lead_story_id) = pool.finalize_with_photos(&photographed_story_ids)?;
+    let photo = photos
+        .into_iter()
+        .find(|photo| photo.story_id == lead_story_id)
+        .ok_or_else(|| {
+            GeneratorError::NoPhoto("selected lead photograph was not retained".into())
+        })?;
+    Ok((research, photo))
 }
 
 fn validation_report(research: &ResearchEdition, at: DateTime<Utc>) -> validate::ValidationReport {
@@ -149,21 +159,6 @@ async fn fetch_previous_edition(public_base_url: &Url) -> Option<EditionV1> {
             None
         }
     }
-}
-
-fn fit_layout_summaries(edition: &mut ResearchEdition) {
-    edition
-        .stories
-        .iter_mut()
-        .enumerate()
-        .for_each(|(index, story)| {
-            let limit = match index {
-                0 => 37,
-                1 => 52,
-                _ => 35,
-            };
-            story.summary = fit_summary(&story.summary, limit);
-        });
 }
 
 fn longest_summary_story_id_excluding<'a>(
@@ -252,8 +247,8 @@ mod tests {
     };
 
     use super::{
-        GenerateOptions, arrange_layout_stories, fit_layout_summaries, generate,
-        longest_summary_story_id_excluding, validate_result,
+        GenerateOptions, arrange_layout_stories, generate, longest_summary_story_id_excluding,
+        validate_result,
     };
     use crate::{
         exa::ExaClient,
@@ -300,7 +295,7 @@ mod tests {
         Mock::given(method("POST"))
             .and(path("/search"))
             .respond_with(ResponseTemplate::new(200).set_body_json(response))
-            .expect(2)
+            .expect(3)
             .mount(&server)
             .await;
         let at = Utc
@@ -362,7 +357,6 @@ mod tests {
             &photo.story_id,
         )?);
         arrange_layout_stories(&mut research, &photo.story_id, &rail_id)?;
-        fit_layout_summaries(&mut research);
         validate_result(&research, at)?;
 
         let public_base = Url::parse("https://example.com/berlin-times/")?;
@@ -470,12 +464,12 @@ mod tests {
     }
 
     #[test]
-    fn fits_role_specific_summaries_without_reordering()
+    fn layout_assignment_preserves_full_summaries()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut edition = serde_json::from_str::<ResearchEdition>(include_str!(
             "../fixtures/valid-research.json"
         ))?;
-        let summary = (0..70).map(|_| "word").collect::<Vec<_>>().join(" ");
+        let summary = (0..60).map(|_| "word").collect::<Vec<_>>().join(" ");
         edition
             .stories
             .iter_mut()
@@ -485,32 +479,22 @@ mod tests {
             .first()
             .map(|story| story.id.clone())
             .ok_or("fixture must contain a lead")?;
-        fit_layout_summaries(&mut edition);
+        let rail_id = edition
+            .stories
+            .get(1)
+            .map(|story| story.id.clone())
+            .ok_or("fixture must contain a rail")?;
+        arrange_layout_stories(&mut edition, &lead_id, &rail_id)?;
 
         assert_eq!(
             edition.stories.first().map(|story| &story.id),
             Some(&lead_id)
         );
-        assert_eq!(
-            edition
-                .stories
-                .first()
-                .map(|story| story.summary.split_whitespace().count()),
-            Some(37)
-        );
-        assert_eq!(
-            edition
-                .stories
-                .get(1)
-                .map(|story| story.summary.split_whitespace().count()),
-            Some(52)
-        );
         assert!(
             edition
                 .stories
                 .iter()
-                .skip(2)
-                .all(|story| { story.summary.split_whitespace().count() == 35 })
+                .all(|story| story.summary.split_whitespace().count() == 60)
         );
         Ok(())
     }

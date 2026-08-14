@@ -11,7 +11,8 @@ use crate::{
 
 const TRACKING_PARAMETERS: &[&str] = &["fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source"];
 
-pub(crate) const MORNING_DOMAINS: &[&str] = &["wsj.com", "nytimes.com", "ft.com", "reuters.com"];
+pub(crate) const MORNING_DOMAINS: &[&str] =
+    &["wsj.com", "nytimes.com", "ft.com", "reuters.com", "bbc.com"];
 pub(crate) const EVENING_DOMAINS: &[&str] = &[
     "handelsblatt.com",
     "tagesschau.de",
@@ -287,13 +288,13 @@ fn validate_plain_text(value: &str, field: &str, prefix: &str, report: &mut Vali
 }
 
 fn validate_copy(
-    index: usize,
+    _index: usize,
     story: &crate::model::ResearchStory,
     prefix: &str,
     report: &mut ValidationReport,
 ) {
     let summary_words = word_count(&story.summary);
-    let maximum = if index == 0 { 69 } else { 60 };
+    let maximum = 60;
     if summary_words > maximum {
         report.problems.push(format!(
             "{prefix} summary has {summary_words} words; maximum is {maximum}"
@@ -445,7 +446,7 @@ mod tests {
     fn exposes_exact_edition_source_profiles() {
         assert_eq!(
             MORNING_DOMAINS,
-            ["wsj.com", "nytimes.com", "ft.com", "reuters.com"]
+            ["wsj.com", "nytimes.com", "ft.com", "reuters.com", "bbc.com"]
         );
         assert_eq!(
             EVENING_DOMAINS,
