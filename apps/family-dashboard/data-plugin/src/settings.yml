@@ -1,0 +1,59 @@
+---
+strategy: polling
+no_screen_padding: 'no'
+dark_mode: 'no'
+static_data:
+polling_verb: get
+framework_version: 3.2.0
+serverless_language: node
+polling_url: https://trmnl.com/custom_plugin_example_data.json
+polling_headers: ''
+polling_body: ''
+id: 415366
+custom_fields:
+- keyname: weather_latitude
+  name: Weather latitude
+  field_type: string
+  description: Latitude for the Open-Meteo forecast.
+  placeholder: '52.5200'
+- keyname: weather_longitude
+  name: Weather longitude
+  field_type: string
+  description: Longitude for the Open-Meteo forecast.
+  placeholder: '13.4050'
+- keyname: transit_stop_id
+  name: Transit stop ID
+  field_type: string
+  description: transport.rest stop identifier used for departures.
+  placeholder: '900000100003'
+- keyname: transit_stop_label
+  name: Transit stop label
+  field_type: string
+  description: Short stop name passed to the visible dashboard.
+  placeholder: Example stop
+  maxlength: 48
+- keyname: transit_direction_a_id
+  name: First direction ID
+  field_type: string
+  description: transport.rest stop identifier used to filter the first direction.
+  placeholder: '900000100001'
+- keyname: transit_direction_a_label
+  name: First direction label
+  field_type: string
+  description: Short label passed to the first departure column.
+  placeholder: Direction A
+  maxlength: 48
+- keyname: transit_direction_b_id
+  name: Second direction ID
+  field_type: string
+  description: transport.rest stop identifier used to filter the second direction.
+  placeholder: '900000100002'
+- keyname: transit_direction_b_label
+  name: Second direction label
+  field_type: string
+  description: Short label passed to the second departure column.
+  placeholder: Direction B
+  maxlength: 48
+name: Berlin Family Dashboard Data
+description: Hidden weather and BVG data source
+refresh_interval: 15

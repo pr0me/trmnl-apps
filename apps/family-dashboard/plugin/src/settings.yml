@@ -1,85 +1,28 @@
 ---
-strategy: polling
+strategy: plugin_merge
 no_screen_padding: 'no'
 dark_mode: 'no'
-static_data: ''
-polling_verb: get
 framework_version: 3.2.0
-serverless_language: node
-polling_url: 'https://www.googleapis.com/calendar/v3/calendars/{{ google_calendar_id | url_encode }}/events?singleEvents=true&orderBy=startTime&showDeleted=false&maxResults=250&timeMin={{ "now" | date: "%Y-%m-%dT%H:%M:%SZ" | url_encode }}&timeZone=Europe%2FBerlin'
-polling_headers: Authorization=Bearer%20{{ oauth_access_token | url_encode }}
-polling_body: ''
-oauth_enabled: 'false'
-oauth_pkce_enabled: 'no'
-oauth_authorize_url: ''
-oauth_token_url: ''
-oauth_scopes: ''
-oauth_scope_separator: ''
-oauth_refresh_url: ''
-oauth_auth_params: ''
-oauth_token_headers: ''
-oauth_token_site: ''
-oauth_token_params: ''
-oauth_token_request_auth_method: ''
-oauth_body_format: ''
-oauth_token_response_metadata: ''
-oauth_authorization_method: ''
-oauth_refresh_params: ''
-oauth_token_field_name: ''
-oauth_expiry_field_name: ''
-oauth_expiry_strategy: ''
-oauth_fixed_expiry_ms: ''
+id: 410021
 custom_fields:
-- keyname: google_calendar_id
-  name: Google Calendar ID
-  field_type: string
-  description: Calendar ID from Google Calendar's Integrate calendar settings.
-  placeholder: calendar-id@example.invalid
+- keyname: calendar_source
+  name: Calendar data source
+  field_type: plugin_instance_select
+  plugin_keyname: google_calendar
+  description: Select the hidden native Google Calendar instance.
+  help_text: Only active Google Calendar instances are shown.
+- keyname: dashboard_data_source
+  name: Dashboard data source
+  field_type: plugin_instance_select
+  plugin_keyname: private_plugin
+  description: Select the hidden Berlin Family Dashboard Data instance.
+  help_text: Only active private plugin instances are shown.
 - keyname: calendar_label
   name: Calendar label
   field_type: string
   description: Short heading shown above upcoming events.
   placeholder: Family
-- keyname: weather_latitude
-  name: Weather latitude
-  field_type: string
-  description: Latitude for the Open-Meteo forecast.
-  placeholder: '52.5200'
-- keyname: weather_longitude
-  name: Weather longitude
-  field_type: string
-  description: Longitude for the Open-Meteo forecast.
-  placeholder: '13.4050'
-- keyname: transit_stop_id
-  name: Transit stop ID
-  field_type: string
-  description: transport.rest stop identifier used for departures.
-  placeholder: '900000100003'
-- keyname: transit_stop_label
-  name: Transit stop label
-  field_type: string
-  description: Short stop name shown above departures.
-  placeholder: Example stop
-- keyname: transit_direction_a_id
-  name: First direction ID
-  field_type: string
-  description: transport.rest stop identifier used to filter the first direction.
-  placeholder: '900000100001'
-- keyname: transit_direction_a_label
-  name: First direction label
-  field_type: string
-  description: Short label for the first departure column.
-  placeholder: Direction A
-- keyname: transit_direction_b_id
-  name: Second direction ID
-  field_type: string
-  description: transport.rest stop identifier used to filter the second direction.
-  placeholder: '900000100002'
-- keyname: transit_direction_b_label
-  name: Second direction label
-  field_type: string
-  description: Short label for the second departure column.
-  placeholder: Direction B
+  maxlength: 48
 name: Berlin Family Dashboard
 description: Weather, calendar and BVG
 refresh_interval: 15

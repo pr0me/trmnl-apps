@@ -8,6 +8,8 @@ EXPECTED_WEATHER_DAYS = Integer(ENV.fetch('EXPECTED_WEATHER_DAYS', '3'))
 EXPECTED_EVENTS = Integer(ENV.fetch('EXPECTED_EVENTS', '5'))
 EXPECTED_DIRECTION_A = Integer(ENV.fetch('EXPECTED_DIRECTION_A', '2'))
 EXPECTED_DIRECTION_B = Integer(ENV.fetch('EXPECTED_DIRECTION_B', '2'))
+EXPECTED_TEXTS = ENV.fetch('EXPECTED_TEXTS', '').split('||').reject(&:empty?)
+UNEXPECTED_TEXTS = ENV.fetch('UNEXPECTED_TEXTS', '').split('||').reject(&:empty?)
 
 options = Selenium::WebDriver::Firefox::Options.new
 options.add_argument('--headless')
@@ -86,6 +88,7 @@ begin
       directionA: document.querySelectorAll('[data-direction="direction_a"] .fd-departure').length,
       directionB: document.querySelectorAll('[data-direction="direction_b"] .fd-departure').length,
       directionHeadings,
+      text: page?.textContent.replace(/\s+/g, ' ').trim(),
       outside
     };
   JS
@@ -120,6 +123,12 @@ begin
     failures << "direction headings clip: #{details.join(', ')}"
   end
   failures << "elements exceed page: #{result['outside'].join(', ')}" unless result['outside'].empty?
+  EXPECTED_TEXTS.each do |expected|
+    failures << "missing rendered text: #{expected}" unless result['text'].include?(expected)
+  end
+  UNEXPECTED_TEXTS.each do |unexpected|
+    failures << "unexpected rendered text: #{unexpected}" if result['text'].include?(unexpected)
+  end
 
   abort(failures.join("\n")) unless failures.empty?
   output = File.expand_path('../_build/layout.png', __dir__)

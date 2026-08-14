@@ -21,15 +21,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Test serverless transform
-        run: node --test apps/family-dashboard/plugin/test/transform_test.js
+      - name: Test data helper transform and merge fixtures
+        run: >-
+          node --test
+          apps/family-dashboard/data-plugin/test/transform_test.js
+          apps/family-dashboard/plugin/test/fixture_test.js
 
-      - name: Validate fixture server
-        run: python3 -m py_compile apps/family-dashboard/plugin/test/fixture_server.py
-
-      - name: Lint TRMNL plugin
+      - name: Lint data helper plugin
         run: >-
           docker run --rm --pull always
+          -v "$PWD/apps/family-dashboard/data-plugin:/plugin"
+          trmnl/trmnlp:latest lint
+
+      - name: Lint presentation plugin
+        run: >-
+          docker run --rm
           -v "$PWD/apps/family-dashboard/plugin:/plugin"
           trmnl/trmnlp:latest lint
 
@@ -45,52 +51,68 @@ jobs:
             events: 5
             direction_a: 2
             direction_b: 2
+            expected_texts: 'Familie||Sommerfest im Innenhof||Gemeinsames||10:30||ganzt||Beispielhaltestelle||Richtung A||Richtung B'
           - variant: maximum
             weather_days: 3
             events: 5
             direction_a: 2
             direction_b: 2
+            expected_texts: 'Familie||Winterreise||18:45||ganzt||Beispielhaltestelle||Richtung A||Richtung B'
           - variant: degraded
             weather_days: 0
             events: 2
             direction_a: 1
             direction_b: 0
+            expected_texts: 'Familie||Kinderarzt||09:30||Geburtstagsfeier||ganzt||Wetter derzeit nicht||Derzeit nicht'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Serve deterministic sources
+      - name: Generate merged fixture
         env:
           FIXTURE_VARIANT: ${{ matrix.variant }}
         run: |
-          nohup python3 apps/family-dashboard/plugin/test/fixture_server.py \
-            apps/family-dashboard/plugin/test/fixtures \
-            --plugin-build apps/family-dashboard/plugin/_build \
-            --variant "$FIXTURE_VARIANT" >/tmp/family-dashboard-http.log 2>&1 &
+          fixture_root="$RUNNER_TEMP/family-dashboard-$FIXTURE_VARIANT"
+          cp -R apps/family-dashboard/plugin "$fixture_root"
+          node apps/family-dashboard/plugin/test/generate_fixture.js \
+            --variant "$FIXTURE_VARIANT" \
+            --output "$fixture_root/.trmnlp.yml"
+
+      - name: Render TRMNL X fixture
+        env:
+          FIXTURE_VARIANT: ${{ matrix.variant }}
+        run: >-
+          docker run --rm --pull always
+          -v "$RUNNER_TEMP/family-dashboard-$FIXTURE_VARIANT:/plugin"
+          trmnl/trmnlp:latest build --quiet --png
+          --width 1872 --height 1404 --color-depth 4
+
+      - name: Serve rendered HTML
+        env:
+          FIXTURE_VARIANT: ${{ matrix.variant }}
+        run: |
+          fixture_root="$RUNNER_TEMP/family-dashboard-$FIXTURE_VARIANT"
+          nohup python3 -m http.server 8010 \
+            --directory "$fixture_root/_build" >/tmp/family-dashboard-http.log 2>&1 &
           for _ in {1..20}; do
-            if curl --fail --silent http://localhost:8010/seed >/dev/null; then
+            if curl --fail --silent http://localhost:8010/full.html >/dev/null; then
               exit 0
             fi
             sleep 0.25
           done
-          cat /tmp/family-dashboard-http.log
+          sed -n '1,120p' /tmp/family-dashboard-http.log
           exit 1
 
-      - name: Render TRMNL X fixture
-        run: >-
-          docker run --rm --pull always
-          --add-host=host.docker.internal:host-gateway
-          -v "$PWD/apps/family-dashboard/plugin:/plugin"
-          trmnl/trmnlp:latest build --quiet --png
-          --width 1872 --height 1404 --color-depth 4
-
-      - name: Verify rendered layout
+      - name: Verify rendered layout and content
         env:
-          LAYOUT_URL: http://host.docker.internal:8010/__plugin__/full.html
+          LAYOUT_URL: http://host.docker.internal:8010/full.html
           EXPECTED_WEATHER_DAYS: ${{ matrix.weather_days }}
           EXPECTED_EVENTS: ${{ matrix.events }}
           EXPECTED_DIRECTION_A: ${{ matrix.direction_a }}
           EXPECTED_DIRECTION_B: ${{ matrix.direction_b }}
+          EXPECTED_TEXTS: ${{ matrix.expected_texts }}
+          FIXTURE_VARIANT: ${{ matrix.variant }}
+          UNEXPECTED_TEXTS: 'Wird wegen Limit nicht gezeigt'
         run: >-
           docker run --rm
           --add-host=host.docker.internal:host-gateway
@@ -99,23 +121,34 @@ jobs:
           -e EXPECTED_EVENTS
           -e EXPECTED_DIRECTION_A
           -e EXPECTED_DIRECTION_B
+          -e EXPECTED_TEXTS
+          -e UNEXPECTED_TEXTS
           --entrypoint /usr/local/bin/ruby
-          -v "$PWD/apps/family-dashboard/plugin:/plugin"
+          -v "$RUNNER_TEMP/family-dashboard-$FIXTURE_VARIANT:/plugin"
           trmnl/trmnlp:latest test/layout_test.rb
 
       - name: Verify render dimensions and palette
+        env:
+          FIXTURE_VARIANT: ${{ matrix.variant }}
         run: |
-          read -r width height colors <<< "$(docker run --rm --entrypoint magick -v "$PWD/apps/family-dashboard/plugin/_build:/images" trmnl/trmnlp:latest identify -format '%w %h %k' /images/full.png)"
+          fixture_root="$RUNNER_TEMP/family-dashboard-$FIXTURE_VARIANT"
+          read -r width height colors <<< "$(docker run --rm --entrypoint magick -v "$fixture_root/_build:/images" trmnl/trmnlp:latest identify -format '%w %h %k' /images/full.png)"
           test "$width" = "1872"
           test "$height" = "1404"
           test "$colors" -le 16
 
-      - name: Make renders readable
-        run: >-
-          docker run --rm
-          --entrypoint chmod
-          -v "$PWD/apps/family-dashboard/plugin/_build:/images"
-          trmnl/trmnlp:latest 0644 /images/full.png /images/layout.png
+      - name: Collect renders
+        env:
+          FIXTURE_VARIANT: ${{ matrix.variant }}
+        run: |
+          fixture_root="$RUNNER_TEMP/family-dashboard-$FIXTURE_VARIANT"
+          mkdir -p apps/family-dashboard/plugin/_build
+          docker run --rm \
+            --entrypoint chmod \
+            -v "$fixture_root/_build:/images" \
+            trmnl/trmnlp:latest 0644 /images/full.png /images/layout.png
+          cp "$fixture_root/_build/full.png" apps/family-dashboard/plugin/_build/full.png
+          cp "$fixture_root/_build/layout.png" apps/family-dashboard/plugin/_build/layout.png
 
       - uses: actions/upload-artifact@v7
         with:
@@ -124,3 +157,83 @@ jobs:
             apps/family-dashboard/plugin/_build/full.png
             apps/family-dashboard/plugin/_build/layout.png
             apps/family-dashboard/plugin/test/golden/${{ matrix.variant }}.png
+
+  view-states:
+    name: View state (${{ matrix.variant }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: missing-helper
+            weather_days: 0
+            events: 5
+            direction_a: 0
+            direction_b: 0
+            expected_texts: 'Dashboard-Datenquelle fehlt||Datenquelle fehlt'
+          - variant: missing-calendar
+            weather_days: 3
+            events: 0
+            direction_a: 2
+            direction_b: 2
+            expected_texts: 'Kalenderquelle fehlt'
+          - variant: empty-calendar
+            weather_days: 3
+            events: 0
+            direction_a: 2
+            direction_b: 2
+            expected_texts: 'Keine anstehenden Termine'
+          - variant: wrong-helper-contract
+            weather_days: 0
+            events: 5
+            direction_a: 0
+            direction_b: 0
+            expected_texts: 'Falsche Dashboard-Datenquelle||Falsche Datenquelle'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Generate and render state fixture
+        env:
+          FIXTURE_VARIANT: ${{ matrix.variant }}
+        run: |
+          fixture_root="$RUNNER_TEMP/family-dashboard-$FIXTURE_VARIANT"
+          cp -R apps/family-dashboard/plugin "$fixture_root"
+          node apps/family-dashboard/plugin/test/generate_fixture.js \
+            --variant "$FIXTURE_VARIANT" \
+            --output "$fixture_root/.trmnlp.yml"
+          docker run --rm --pull always \
+            -v "$fixture_root:/plugin" \
+            trmnl/trmnlp:latest build --quiet --width 1872 --height 1404 --color-depth 4
+          nohup python3 -m http.server 8010 \
+            --directory "$fixture_root/_build" >/tmp/family-dashboard-http.log 2>&1 &
+          for _ in {1..20}; do
+            if curl --fail --silent http://localhost:8010/full.html >/dev/null; then
+              exit 0
+            fi
+            sleep 0.25
+          done
+          sed -n '1,120p' /tmp/family-dashboard-http.log
+          exit 1
+
+      - name: Verify state-specific rendered HTML
+        env:
+          LAYOUT_URL: http://host.docker.internal:8010/full.html
+          EXPECTED_WEATHER_DAYS: ${{ matrix.weather_days }}
+          EXPECTED_EVENTS: ${{ matrix.events }}
+          EXPECTED_DIRECTION_A: ${{ matrix.direction_a }}
+          EXPECTED_DIRECTION_B: ${{ matrix.direction_b }}
+          EXPECTED_TEXTS: ${{ matrix.expected_texts }}
+          FIXTURE_VARIANT: ${{ matrix.variant }}
+        run: >-
+          docker run --rm
+          --add-host=host.docker.internal:host-gateway
+          -e LAYOUT_URL
+          -e EXPECTED_WEATHER_DAYS
+          -e EXPECTED_EVENTS
+          -e EXPECTED_DIRECTION_A
+          -e EXPECTED_DIRECTION_B
+          -e EXPECTED_TEXTS
+          --entrypoint /usr/local/bin/ruby
+          -v "$RUNNER_TEMP/family-dashboard-$FIXTURE_VARIANT:/plugin"
+          trmnl/trmnlp:latest test/layout_test.rb

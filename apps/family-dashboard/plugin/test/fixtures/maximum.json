@@ -1,45 +1,37 @@
 {
   "now": "2026-12-29T17:05:00Z",
   "calendar": {
-    "data": {
-      "events": [
+    "events": [
         {
           "summary": "Mehr­tägige Winterreise zwischen den Jahren",
           "date_time": "2026-12-28",
-          "start_full": "2026-12-28",
-          "end_full": "2027-01-02",
           "all_day": true
         },
         {
           "summary": "Großer Jahresabschluss mit Nachbarinnen, Nachbarn und allen Kindern aus dem Haus",
           "date_time": "2026-12-30T18:45:00+01:00",
-          "start_full": "2026-12-30T18:45:00+01:00",
-          "end_full": "2026-12-30T22:30:00+01:00",
+          "start": "18:45",
           "all_day": false
         },
         {
           "summary": "Silvestervorbereitungen: Pfannkuchen, Raclette und Wunderkerzen besorgen",
           "date_time": "2026-12-31T09:15:00+01:00",
-          "start_full": "2026-12-31T09:15:00+01:00",
-          "end_full": "2026-12-31T11:30:00+01:00",
+          "start": "09:15",
           "all_day": false
         },
         {
           "summary": "Neujahrsbrunch mit Freundinnen, Freunden und Nachbarschaft",
           "date_time": "2027-01-01T11:30:00+01:00",
-          "start_full": "2027-01-01T11:30:00+01:00",
-          "end_full": "2027-01-01T15:00:00+01:00",
+          "start": "11:30",
           "all_day": false
         },
         {
           "summary": "Erster Schultag nach den Ferien – Sportsachen und Brotdosen nicht vergessen",
           "date_time": "2027-01-04T07:45:00+01:00",
-          "start_full": "2027-01-04T07:45:00+01:00",
-          "end_full": "2027-01-04T08:15:00+01:00",
+          "start": "07:45",
           "all_day": false
         }
-      ]
-    }
+    ]
   },
   "weather": {
     "current": {

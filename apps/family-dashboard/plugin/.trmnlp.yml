@@ -3,7 +3,3 @@ watch:
   - .trmnlp.yml
   - src
 time_zone: Europe/Berlin
-variables:
-  trmnl:
-    plugin_settings:
-      polling_url: http://host.docker.internal:8010/seed

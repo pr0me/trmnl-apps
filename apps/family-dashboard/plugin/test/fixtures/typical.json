@@ -1,59 +1,43 @@
 {
   "now": "2026-08-08T14:00:00Z",
   "calendar": {
-    "data": {
-      "events": [
-        {
-          "summary": "Schon vorbei",
-          "date_time": "2026-08-08T13:00:00+02:00",
-          "start_full": "2026-08-08T13:00:00+02:00",
-          "end_full": "2026-08-08T14:00:00+02:00",
-          "all_day": false
-        },
+    "events": [
         {
           "summary": "Sommerfest im Innenhof",
           "date_time": "2026-08-08",
-          "start_full": "2026-08-08",
-          "end_full": "2026-08-09",
           "all_day": true
         },
         {
           "summary": "Gemeinsames Frühstück",
           "date_time": "2026-08-09T10:30:00+02:00",
-          "start_full": "2026-08-09T10:30:00+02:00",
-          "end_full": "2026-08-09T12:00:00+02:00",
+          "start": "10:30",
           "all_day": false
         },
         {
           "summary": "Zahnarzttermin",
           "date_time": "2026-08-10T15:45:00+02:00",
-          "start_full": "2026-08-10T15:45:00+02:00",
-          "end_full": "2026-08-10T16:30:00+02:00",
+          "start": "15:45",
           "all_day": false
         },
         {
           "summary": "Elternabend",
           "date_time": "2026-08-12T18:00:00+02:00",
-          "start_full": "2026-08-12T18:00:00+02:00",
-          "end_full": "2026-08-12T19:30:00+02:00",
+          "start": "18:00",
           "all_day": false
         },
         {
           "summary": "Verwandtschaft besuchen",
           "date_time": "2026-08-15T11:00:00+02:00",
-          "start_full": "2026-08-15T11:00:00+02:00",
-          "end_full": "2026-08-15T16:00:00+02:00",
+          "start": "11:00",
           "all_day": false
         },
         {
           "summary": "Wird wegen Limit nicht gezeigt",
           "date_time": "2026-08-18T09:00:00+02:00",
-          "start_full": "2026-08-18T09:00:00+02:00",
-          "end_full": "2026-08-18T10:00:00+02:00",
+          "start": "09:00",
           "all_day": false
         }
-      ]
-    }
+    ]
   },
   "weather": {
     "current": {

@@ -1,13 +1,7 @@
 const BERLIN_TIME_ZONE = "Europe/Berlin";
-const FIXTURE_URL_PREFIX = "http://host.docker.internal:8010/";
+const CONTRACT = "family_dashboard_data_v1";
 const MAX_RESPONSE_BYTES = 250_000;
 const REQUEST_TIMEOUT_MS = 1_500;
-const FIXTURE_LABELS = {
-  calendar: "Kalender",
-  stop: "Beispielhaltestelle",
-  direction_a: "Richtung A",
-  direction_b: "Richtung B",
-};
 
 function requiredSetting(input, key) {
   const value = input?.[key];
@@ -56,7 +50,6 @@ function productionConfiguration(input) {
       direction_b: transitSource(stop, transitSetting(input, "transit_direction_b_id")),
     },
     labels: {
-      calendar: labelSetting(input, "calendar_label"),
       stop: labelSetting(input, "transit_stop_label"),
       direction_a: labelSetting(input, "transit_direction_a_label"),
       direction_b: labelSetting(input, "transit_direction_b_label"),
@@ -99,7 +92,7 @@ function dateParts(date, options) {
 function dateFromDay(day) {
   const date = new Date(`${day}T12:00:00Z`);
   if (Number.isNaN(date.getTime())) {
-    throw new Error("invalid calendar date");
+    throw new Error("invalid forecast date");
   }
   return date;
 }
@@ -118,17 +111,6 @@ function dateLabel(day) {
   })
     .format(dateFromDay(day))
     .replace(".", "");
-}
-
-function berlinDay(date) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    timeZone: BERLIN_TIME_ZONE,
-  }).formatToParts(date);
-  const values = Object.fromEntries(parts.map(({ type, value }) => [type, value]));
-  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function timeLabel(date) {
@@ -166,78 +148,6 @@ function normalizeWeather(payload) {
     humidity_pct: Math.round(finiteNumber(current.relative_humidity_2m, "humidity")),
     days,
   };
-}
-
-function eventStart(event) {
-  return event?.start_full || event?.date_time || event?.start;
-}
-
-function eventEndDay(event) {
-  const value = event?.end_full || event?.end;
-  return typeof value === "string" ? value.slice(0, 10) : "";
-}
-
-function calendarEvents(payload) {
-  const normalizedEvents = payload?.data?.events || payload?.events;
-  if (Array.isArray(normalizedEvents)) {
-    return normalizedEvents;
-  }
-  if (!Array.isArray(payload?.items)) {
-    throw new Error("invalid calendar response");
-  }
-
-  return payload.items
-    .filter((event) => event?.status !== "cancelled")
-    .map((event) => {
-      const start = event?.start?.dateTime || event?.start?.date;
-      const end = event?.end?.dateTime || event?.end?.date;
-      return {
-        summary: event?.summary,
-        start_full: start,
-        end_full: end,
-        all_day: typeof event?.start?.date === "string",
-      };
-    });
-}
-
-function normalizeEvents(payload, now) {
-  const events = calendarEvents(payload);
-  const today = berlinDay(now);
-
-  return events
-    .filter((event) => {
-      const start = eventStart(event);
-      if (typeof start !== "string" || start.length < 10) {
-        return false;
-      }
-      if (event.all_day === true) {
-        const startDay = start.slice(0, 10);
-        const endDay = eventEndDay(event);
-        return startDay >= today || (startDay < today && endDay > today);
-      }
-      const parsed = new Date(start);
-      return !Number.isNaN(parsed.getTime()) && parsed >= now;
-    })
-    .sort((left, right) => {
-      const leftStart = eventStart(left);
-      const rightStart = eventStart(right);
-      return leftStart.localeCompare(rightStart);
-    })
-    .slice(0, 5)
-    .map((event) => {
-      const start = eventStart(event);
-      const day = start.slice(0, 10);
-      const parsed = new Date(start);
-      const allDay = event.all_day === true;
-      return {
-        date: day,
-        weekday: weekday(day),
-        date_label: dateLabel(day),
-        title: String(event.summary || "Ohne Titel").trim() || "Ohne Titel",
-        time: allDay ? "ganztägig" : timeLabel(parsed),
-        all_day: allDay,
-      };
-    });
 }
 
 function normalizeDepartures(payload, now) {
@@ -278,31 +188,7 @@ function normalizeDepartures(payload, now) {
     .map(({ timestamp: _timestamp, ...departure }) => departure);
 }
 
-function fixtureSources(input) {
-  const sources = input?.fixture_sources;
-  if (!sources || typeof sources !== "object") {
-    return null;
-  }
-  const values = [sources.weather, sources.direction_a, sources.direction_b];
-  const allowed = values.every(
-    (value) => typeof value === "string" && value.startsWith(FIXTURE_URL_PREFIX),
-  );
-  return allowed ? sources : null;
-}
-
-function calendarPayload(input) {
-  const candidates = [input?.calendar_source, input?.IDX_0, input?.data, input];
-  return candidates.find((candidate) => (
-    Array.isArray(candidate?.items)
-      || Array.isArray(candidate?.events)
-      || Array.isArray(candidate?.data?.events)
-  )) || null;
-}
-
 async function fetchJson(url, fetchImplementation) {
-  if (!url) {
-    throw new Error("source is not configured");
-  }
   const response = await fetchImplementation(url, {
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
@@ -320,21 +206,12 @@ async function fetchJson(url, fetchImplementation) {
   }
 }
 
-async function run(input, fetchImplementation = fetch) {
-  const fixtureUrl = input?.fixture_url;
-  if (fixtureUrl && (typeof fixtureUrl !== "string" || !fixtureUrl.startsWith(FIXTURE_URL_PREFIX))) {
-    throw new Error("invalid fixture url");
+async function run(input, fetchImplementation = fetch, now = new Date()) {
+  if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+    throw new Error("invalid current time");
   }
-  const runtimeInput = fixtureUrl ? await fetchJson(fixtureUrl, fetchImplementation) : input;
-  const fixture = fixtureSources(runtimeInput);
-  const configuration = fixture
-    ? { sources: fixture, labels: FIXTURE_LABELS }
-    : productionConfiguration(runtimeInput);
-  const { labels, sources } = configuration;
-  const now = fixture && runtimeInput.fixture_now ? new Date(runtimeInput.fixture_now) : new Date();
-  if (Number.isNaN(now.getTime())) {
-    throw new Error("invalid fixture time");
-  }
+  const hostedSettings = input?.trmnl?.plugin_settings?.custom_fields_values;
+  const { labels, sources } = productionConfiguration(hostedSettings || input);
   const requests = [
     ["weather", sources.weather],
     ["direction_a", sources.direction_a],
@@ -343,34 +220,19 @@ async function run(input, fetchImplementation = fetch) {
   const settled = await Promise.allSettled(
     requests.map(([, url]) => fetchJson(url, fetchImplementation)),
   );
-  const payloads = {
-    calendar: calendarPayload(runtimeInput),
-    ...Object.fromEntries(
-      requests.map(([name], index) => [name, settled[index].status === "fulfilled" ? settled[index].value : null]),
-    ),
-  };
+  const payloads = Object.fromEntries(
+    requests.map(([name], index) => [name, settled[index].status === "fulfilled" ? settled[index].value : null]),
+  );
 
-  let weather = null;
-  let events = [];
+  let weather = {};
   const departures = { direction_a: [], direction_b: [] };
-  const sourceStatus = {
-    calendar: "error",
-    weather: "error",
-    direction_a: "error",
-    direction_b: "error",
-  };
+  const sourceStatus = { weather: "error", direction_a: "error", direction_b: "error" };
 
   try {
     weather = normalizeWeather(payloads.weather);
     sourceStatus.weather = "ok";
   } catch (_error) {
-    weather = null;
-  }
-  try {
-    events = normalizeEvents(payloads.calendar, now);
-    sourceStatus.calendar = events.length === 0 ? "empty" : "ok";
-  } catch (_error) {
-    events = [];
+    weather = {};
   }
   for (const direction of ["direction_a", "direction_b"]) {
     try {
@@ -386,11 +248,11 @@ async function run(input, fetchImplementation = fetch) {
   }
 
   return {
+    contract: CONTRACT,
     generated_at: now.toISOString(),
     generated_time: timeLabel(now),
     labels,
     weather,
-    events,
     departures,
     source_status: sourceStatus,
   };
@@ -398,9 +260,8 @@ async function run(input, fetchImplementation = fetch) {
 
 if (typeof module !== "undefined") {
   module.exports = {
-    calendarPayload,
+    CONTRACT,
     normalizeDepartures,
-    normalizeEvents,
     normalizeWeather,
     productionConfiguration,
     run,

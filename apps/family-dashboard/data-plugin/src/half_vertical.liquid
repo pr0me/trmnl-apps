@@ -1,0 +1,9 @@
+<div class="layout layout--col gap--large">
+  <h1 class="title">Berlin Family Dashboard Data</h1>
+  <p class="description">Data-only helper · keep active, but hidden in playlist</p>
+  <div class="flex gap--large">
+    <span class="label">Weather: {{ source_status.weather | default: "unknown" }}</span>
+    <span class="label">Direction A: {{ source_status.direction_a | default: "unknown" }}</span>
+    <span class="label">Direction B: {{ source_status.direction_b | default: "unknown" }}</span>
+  </div>
+</div>

@@ -1,0 +1,14 @@
+---
+watch:
+  - .trmnlp.yml
+  - src
+time_zone: Europe/Berlin
+custom_fields:
+  weather_latitude: '52.5200'
+  weather_longitude: '13.4050'
+  transit_stop_id: '900000100003'
+  transit_stop_label: Beispielhaltestelle
+  transit_direction_a_id: '900000100001'
+  transit_direction_a_label: Richtung A
+  transit_direction_b_id: '900000100002'
+  transit_direction_b_label: Richtung B

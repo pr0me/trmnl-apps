@@ -4,5 +4,7 @@ apps/berlin-times/plugin/_build/
 apps/berlin-times/plugin/.trmnlp-cache/
 apps/family-dashboard/plugin/_build/
 apps/family-dashboard/plugin/.trmnlp-cache/
+apps/family-dashboard/data-plugin/_build/
+apps/family-dashboard/data-plugin/.trmnlp-cache/
 __pycache__/
 .DS_Store

@@ -1,12 +1,45 @@
+{% assign helper_present = true %}
+{% if dashboard_data_source == blank %}
+  {% assign helper_present = false %}
+{% endif %}
+{% assign helper_data = dashboard_data_source.merge_variables | default: dashboard_data_source %}
+{% if helper_data.data.contract == "family_dashboard_data_v1" %}
+  {% assign helper_data = helper_data.data %}
+{% endif %}
+{% assign helper_valid = false %}
+{% if helper_present and helper_data.contract == "family_dashboard_data_v1" %}
+  {% assign helper_valid = true %}
+{% endif %}
+{% assign weather = helper_data.weather %}
+{% assign labels = helper_data.labels %}
+{% assign departures = helper_data.departures %}
+{% assign source_status = helper_data.source_status %}
+{% assign generated_time = helper_data.generated_time %}
+{% assign calendar_label = trmnl.plugin_settings.custom_fields_values.calendar_label %}
+{% assign calendar_present = true %}
+{% if calendar_source == blank %}
+  {% assign calendar_present = false %}
+{% endif %}
+{% assign events = calendar_source.events %}
+{% if events == blank and calendar_source.data.events != blank %}
+  {% assign events = calendar_source.data.events %}
+{% endif %}
+
 <div class="fd">
   <main class="fd-board">
     <section class="fd-weather">
       <div class="fd-today">
         <div class="fd-section-heading">
           <span>Heute</span>
-          {% if weather %}<span class="fd-section-heading__minor">{{ weather.days[0].weekday }} · {{ weather.days[0].date_label }}</span>{% endif %}
+          {% if helper_valid and source_status.weather != "error" and weather.days.size > 0 %}<span class="fd-section-heading__minor">{{ weather.days[0].weekday }} · {{ weather.days[0].date_label }}</span>{% endif %}
         </div>
-        {% if weather %}
+        {% unless helper_present %}
+          <div class="fd-empty">Dashboard-Datenquelle fehlt</div>
+        {% elsif helper_valid == false %}
+          <div class="fd-empty">Falsche Dashboard-Datenquelle</div>
+        {% elsif source_status.weather == "error" %}
+          <div class="fd-empty">Wetter derzeit nicht verfügbar</div>
+        {% elsif weather.days.size > 0 %}
           <div class="fd-today__body">
             <svg class="fd-today__glyph" role="img" aria-label="{{ weather.days[0].state_label | escape }}"><use href="#fd-glyph-{{ weather.days[0].glyph | escape }}"></use></svg>
             <div class="fd-today__reading">
@@ -27,12 +60,12 @@
             </div>
           </div>
         {% else %}
-          <div class="fd-empty">Wetter derzeit nicht verfügbar</div>
-        {% endif %}
+          <div class="fd-empty">Keine Wetterdaten</div>
+        {% endunless %}
       </div>
 
       <div class="fd-forecast">
-        {% if weather %}
+        {% if helper_valid and source_status.weather != "error" and weather.days.size > 0 %}
           {% for day in weather.days offset: 1 limit: 3 %}
             <article class="fd-day">
               <div class="fd-day__heading">
@@ -44,8 +77,14 @@
               <div class="fd-day__maximum">{{ day.max_c }}°</div>
             </article>
           {% endfor %}
-        {% else %}
+        {% elsif helper_present == false %}
+          <div class="fd-empty">Dashboard-Datenquelle fehlt</div>
+        {% elsif helper_valid == false %}
+          <div class="fd-empty">Falsche Dashboard-Datenquelle</div>
+        {% elsif source_status.weather == "error" %}
           <div class="fd-empty">Keine Vorhersage</div>
+        {% else %}
+          <div class="fd-empty">Keine Wetterdaten</div>
         {% endif %}
       </div>
     </section>
@@ -56,33 +95,43 @@
       <section class="fd-events">
         <div class="fd-section-heading">
           <span>Nächste Termine</span>
-          <span class="fd-section-heading__minor">{{ labels.calendar | escape }}</span>
+          <span class="fd-section-heading__minor">{{ calendar_label | escape }}</span>
         </div>
-        {% if source_status.calendar == "error" %}
-          <div class="fd-empty">Kalender derzeit nicht verfügbar</div>
+        {% unless calendar_present %}
+          <div class="fd-empty">Kalenderquelle fehlt</div>
         {% elsif events.size == 0 %}
           <div class="fd-empty">Keine anstehenden Termine</div>
         {% else %}
           <div class="fd-event-list">
             {% for event in events limit: 5 %}
+              {% assign weekday_number = event.date_time | date: "%w" %}
+              {% case weekday_number %}
+                {% when "1" %}{% assign event_weekday = "Mo" %}
+                {% when "2" %}{% assign event_weekday = "Di" %}
+                {% when "3" %}{% assign event_weekday = "Mi" %}
+                {% when "4" %}{% assign event_weekday = "Do" %}
+                {% when "5" %}{% assign event_weekday = "Fr" %}
+                {% when "6" %}{% assign event_weekday = "Sa" %}
+                {% else %}{% assign event_weekday = "So" %}
+              {% endcase %}
               <article class="fd-event">
                 <div class="fd-event__date">
-                  <span class="fd-event__weekday">{{ event.weekday | escape }}</span>
-                  <span class="fd-event__day">{{ event.date_label | escape }}</span>
+                  <span class="fd-event__weekday">{{ event_weekday }}</span>
+                  <span class="fd-event__day">{{ event.date_time | date: "%-d.%m." }}</span>
                 </div>
-                <h2 class="fd-event__title">{{ event.title | escape }}</h2>
-                <time class="fd-event__time{% if event.all_day %} fd-event__time--all-day{% endif %}">{{ event.time | escape }}</time>
+                <h2 class="fd-event__title">{{ event.summary | default: "Ohne Titel" | escape }}</h2>
+                <time class="fd-event__time{% if event.all_day %} fd-event__time--all-day{% endif %}">{% if event.all_day %}ganztägig{% else %}{{ event.start | escape }}{% endif %}</time>
               </article>
             {% endfor %}
           </div>
-        {% endif %}
+        {% endunless %}
       </section>
 
       <div class="fd-rule"></div>
 
       <section class="fd-transit">
         <div class="fd-section-heading">
-          <span>Ab {{ labels.stop | escape }}</span>
+          <span>{% if helper_valid %}Ab {{ labels.stop | escape }}{% else %}Abfahrten{% endif %}</span>
           <span class="fd-section-heading__minor">Tram</span>
         </div>
         <div class="fd-transit__body">
@@ -99,9 +148,13 @@
             {% endif %}
             <div class="fd-direction" data-direction="{{ direction | escape }}">
               <div class="fd-direction__heading">
-                {{ direction_label | escape }}
+                {{ direction_label | default: "Datenquelle" | escape }}
               </div>
-              {% if direction_status == "error" %}
+              {% unless helper_present %}
+                <div class="fd-empty">Datenquelle fehlt</div>
+              {% elsif helper_valid == false %}
+                <div class="fd-empty">Falsche Datenquelle</div>
+              {% elsif direction_status == "error" %}
                 <div class="fd-empty">Derzeit nicht verfügbar</div>
               {% elsif direction_departures.size == 0 %}
                 <div class="fd-empty">Keine Abfahrten</div>
@@ -116,7 +169,7 @@
                     </article>
                   {% endfor %}
                 </div>
-              {% endif %}
+              {% endunless %}
             </div>
           {% endfor %}
         </div>
@@ -125,7 +178,7 @@
   </main>
 
   <footer class="fd-footer">
-    <span>Stand {{ generated_time | escape }} · Wetter: Open-Meteo</span>
+    <span>{% if helper_valid %}Stand {{ generated_time | escape }} · {% endif %}Wetter: Open-Meteo</span>
     <span>Verkehr: transport.rest / BVG</span>
   </footer>
 </div>
