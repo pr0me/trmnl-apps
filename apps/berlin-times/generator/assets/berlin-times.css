@@ -164,7 +164,7 @@
 
 .bt-lower {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 34px;
   overflow: hidden;
 }
@@ -232,7 +232,9 @@
 }
 
 .bt-story--lead .bt-headline {
-  font-size: 68px;
+  overflow-wrap: normal;
+  text-wrap: wrap;
+  font-size: 60px;
   line-height: .98;
   -webkit-line-clamp: 3;
 }
@@ -297,20 +299,20 @@
 }
 
 .bt-story--brief .bt-headline {
-  font-size: 34px;
-  line-height: .94;
-  -webkit-line-clamp: 5;
+  font-size: 40px;
+  line-height: .96;
+  -webkit-line-clamp: 4;
 }
 
 .bt-story--brief .bt-summary {
-  margin-top: 6px;
-  font-size: 35px;
-  line-height: .94;
+  margin-top: 8px;
+  font-size: 44px;
+  line-height: .96;
 }
 
 .bt-story--brief .bt-byline {
-  margin-top: 5px;
-  font-size: 14px;
+  margin-top: 7px;
+  font-size: 15px;
 }
 
 .bt-story--rail .bt-headline {

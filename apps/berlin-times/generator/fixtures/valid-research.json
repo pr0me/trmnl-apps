@@ -5,7 +5,7 @@
       "primary_category": "global_politics",
       "is_developing": false,
       "headline": "Allies beginnen dringende Sicherheitsgespräche",
-      "summary": "Atlantic allies opened emergency talks after a rapid deterioration in regional security. Officials said the meeting would focus on civilian protection, diplomatic channels, and immediate measures to prevent further escalation, while warning that negotiations remained at an early and uncertain stage.",
+      "summary": "Atlantic allies opened emergency talks after a rapid deterioration in regional security raised immediate concerns. Officials said the meeting would focus on civilian protection, diplomatic channels, coordinated contingency planning, and practical measures to prevent further escalation, while warning that negotiations remained at an early and uncertain stage and additional decisions could follow as verified information emerges.",
       "published_at": "2026-08-05T02:45:00Z",
       "sources": [
         {
@@ -19,7 +19,7 @@
       "primary_category": "global_economics",
       "is_developing": false,
       "headline": "Markets reassess rate outlook",
-      "summary": "Global markets shifted as investors weighed fresh inflation data against cautious central bank guidance. Bond yields moved higher, while analysts said the figures reduced expectations for rapid interest-rate cuts this year.",
+      "summary": "Global markets shifted as investors weighed fresh inflation data against cautious central bank guidance. Government bond yields moved higher across several regions, while analysts said the figures reduced expectations for rapid interest-rate cuts and increased uncertainty about borrowing costs through the remainder of the year.",
       "published_at": "2026-08-05T01:30:00Z",
       "sources": [
         {
@@ -33,7 +33,7 @@
       "primary_category": "germany",
       "is_developing": false,
       "headline": "Berlin beschleunigt wichtige Bahnreparaturen",
-      "summary": "Berlin transport officials advanced repairs on a heavily used rail corridor after engineers found additional structural wear. Revised service plans add replacement buses and extend evening work to shorten the disruption.",
+      "summary": "Berlin transport officials advanced repairs on a heavily used rail corridor after engineers found additional structural wear during inspections. Revised service plans add replacement buses, extend evening work, and redirect passengers around closed stations to shorten disruption while crews restore reliable service across the network.",
       "published_at": "2026-08-04T22:20:00Z",
       "sources": [
         {
@@ -47,26 +47,12 @@
       "primary_category": "technology",
       "is_developing": false,
       "headline": "Europa verschärft Regeln für Cloud-Sicherheit",
-      "summary": "European regulators issued detailed security requirements for cloud services used by critical sectors. Providers must strengthen incident reporting, supply-chain controls, and resilience testing under a phased compliance timetable.",
+      "summary": "European regulators issued detailed security requirements for cloud services used by critical sectors including energy, transport, and healthcare. Providers must strengthen incident reporting, supply-chain controls, access safeguards, and resilience testing under a phased compliance timetable intended to reduce systemic risk and improve cross-border response coordination.",
       "published_at": "2026-08-04T23:10:00Z",
       "sources": [
         {
           "name": "Handelsblatt",
           "url": "https://www.handelsblatt.com/technik/it-internet/cloud-security-rules/100000001.html"
-        }
-      ]
-    },
-    {
-      "id": "cities-expand-heat-response-plans-for-vulnerable-residents-a6f84921",
-      "primary_category": "climate",
-      "is_developing": false,
-      "headline": "Cities expand protection during heatwave",
-      "summary": "Cities across southern Europe expanded cooling centres and health alerts as temperatures rose. Authorities prioritised older residents, outdoor workers, and neighbourhoods with limited shade during the prolonged heat spell.",
-      "published_at": "2026-08-04T23:00:00Z",
-      "sources": [
-        {
-          "name": "The New York Times",
-          "url": "https://www.nytimes.com/2026/08/05/world/europe/heat-response.html"
         }
       ]
     }
@@ -75,7 +61,6 @@
     "global-markets-shift-as-investors-weigh-fresh-inflation-669ead03",
     "atlantic-allies-open-emergency-security-talks-b5932f17",
     "berlin-transport-officials-advance-repairs-on-heavily-used-f29e34a1",
-    "european-regulators-issue-detailed-security-requirements-for-cloud-98254877",
-    "cities-expand-heat-response-plans-for-vulnerable-residents-a6f84921"
+    "european-regulators-issue-detailed-security-requirements-for-cloud-98254877"
   ]
 }

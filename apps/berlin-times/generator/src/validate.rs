@@ -56,9 +56,9 @@ impl ValidationReport {
 #[must_use]
 pub fn validate_edition(edition: &ResearchEdition, now: DateTime<Utc>) -> ValidationReport {
     let mut report = ValidationReport::default();
-    if edition.stories.len() != 5 {
+    if edition.stories.len() != 4 {
         report.problems.push(format!(
-            "expected exactly five stories, received {}",
+            "expected exactly four stories, received {}",
             edition.stories.len()
         ));
     }
@@ -254,7 +254,7 @@ fn validate_photo_candidates(edition: &ResearchEdition, report: &mut ValidationR
 }
 
 fn validate_provider_diversity(edition: &ResearchEdition, report: &mut ValidationReport) {
-    if edition.stories.len() != 5 {
+    if edition.stories.len() != 4 {
         return;
     }
     let providers = edition.stories.iter().filter_map(|story| {
@@ -275,7 +275,7 @@ fn validate_provider_diversity(edition: &ResearchEdition, report: &mut Validatio
     {
         report
             .problems
-            .push("dominant source may supply at most three of five stories".into());
+            .push("dominant source may supply at most three of four stories".into());
     }
 }
 
@@ -524,7 +524,7 @@ mod tests {
         research
             .stories
             .iter_mut()
-            .take(5)
+            .take(4)
             .enumerate()
             .for_each(|(index, story)| {
                 story.sources = vec![crate::model::ResearchSource {
@@ -535,7 +535,7 @@ mod tests {
 
         let report = validate_edition(&research, now()?);
         assert!(report.problems.iter().any(|problem| {
-            problem == "dominant source may supply at most three of five stories"
+            problem == "dominant source may supply at most three of four stories"
         }));
         Ok(())
     }

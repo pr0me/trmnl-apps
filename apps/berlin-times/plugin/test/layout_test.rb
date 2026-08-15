@@ -6,7 +6,7 @@ WIDTH = 1872
 HEIGHT = 1404
 MAX_PHOTO_AREA = 0.18
 MIN_PHOTO_AREA = 0.10
-MIN_SUMMARY_FONT_SIZE = 35
+MIN_SUMMARY_FONT_SIZE = 39
 
 options = Selenium::WebDriver::Firefox::Options.new
 options.add_argument('--headless')
@@ -148,6 +148,14 @@ begin
       screenHeight: screen?.getBoundingClientRect().height,
       minimumSummaryFontSize: Math.min(...summaries.map((summary) =>
         Number.parseFloat(getComputedStyle(summary).fontSize))),
+      briefSummaryFontSize: Number.parseFloat(getComputedStyle(
+        document.querySelector('.bt-story--brief .bt-summary')).fontSize),
+      leadHeadlineFontSize: Number.parseFloat(getComputedStyle(
+        document.querySelector('.bt-story--lead .bt-headline')).fontSize),
+      leadHeadlineOverflowWrap: getComputedStyle(
+        document.querySelector('.bt-story--lead .bt-headline')).overflowWrap,
+      leadHeadlineTextWrap: getComputedStyle(
+        document.querySelector('.bt-story--lead .bt-headline')).textWrap,
       justifiedSummaries: summaries
         .filter((summary) => getComputedStyle(summary).textAlign === 'justify').length,
       mastheadFontFamily: masthead ? getComputedStyle(masthead).fontFamily : '',
@@ -188,10 +196,10 @@ begin
 
   failures = []
   failures << "plugin layout did not reach a stable state" unless layout_ready
-  failures << "expected five articles, received #{result['articles']}" unless result['articles'] == 5
-  failures << "expected five headlines, received #{result['headlines']}" unless result['headlines'] == 5
-  failures << "expected five summaries, received #{result['summaries']}" unless result['summaries'] == 5
-  failures << "story ids are not unique" unless result['uniqueStories'] == 5
+  failures << "expected four articles, received #{result['articles']}" unless result['articles'] == 4
+  failures << "expected four headlines, received #{result['headlines']}" unless result['headlines'] == 4
+  failures << "expected four summaries, received #{result['summaries']}" unless result['summaries'] == 4
+  failures << "story ids are not unique" unless result['uniqueStories'] == 4
   failures << "expected one visible image, received #{result['visibleImages']}" unless result['visibleImages'] == 1
   unless result['caption']&.start_with?('Photograph: ')
     failures << "unexpected photo caption: #{result['caption'].inspect}"
@@ -199,7 +207,7 @@ begin
   unless result['leadStoryId'] == result['photoStoryId']
     failures << "lead #{result['leadStoryId']} does not match photo #{result['photoStoryId']}"
   end
-  failures << "expected three bottom stories" unless result['bottomStories'] == 3
+  failures << "expected two bottom stories" unless result['bottomStories'] == 2
   if result['photoArea'].to_f < MIN_PHOTO_AREA
     failures << format('photo occupies only %.2f%% of screen', result['photoArea'].to_f * 100)
   end
@@ -225,7 +233,19 @@ begin
   if result['minimumSummaryFontSize'].to_f < MIN_SUMMARY_FONT_SIZE
     failures << "minimum summary font size is #{result['minimumSummaryFontSize']}"
   end
-  unless result['justifiedSummaries'] == 5
+  if result['briefSummaryFontSize'].to_f < 44
+    failures << "brief summary font size is #{result['briefSummaryFontSize']}"
+  end
+  unless result['leadHeadlineFontSize'].to_f.round == 60
+    failures << "lead headline font size is #{result['leadHeadlineFontSize']}"
+  end
+  unless result['leadHeadlineOverflowWrap'] == 'normal'
+    failures << "lead headline overflow wrap is #{result['leadHeadlineOverflowWrap']}"
+  end
+  unless result['leadHeadlineTextWrap'] == 'wrap'
+    failures << "lead headline text wrap is #{result['leadHeadlineTextWrap']}"
+  end
+  unless result['justifiedSummaries'] == 4
     failures << "only #{result['justifiedSummaries']} summaries are justified"
   end
   unless result['mastheadFontFamily'].to_s.include?('Berlin Fraktur') && result['frakturLoaded']
@@ -261,7 +281,7 @@ begin
   driver.execute_script('window.scrollTo(0, 0)')
   driver.save_screenshot(output)
   File.chmod(0o644, output)
-  puts format('layout valid: five stories, one image, %.2f%% photo area', result['photoArea'].to_f * 100)
+  puts format('layout valid: four stories, one image, %.2f%% photo area', result['photoArea'].to_f * 100)
 ensure
   driver.quit
 end

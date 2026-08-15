@@ -1,6 +1,6 @@
 # The Berlin Times
 
-The Berlin Times is a private, landscape-only TRMNL X newspaper front page. It publishes exactly five concise news briefs with English headlines and summaries at 06:00 and 17:00 Europe/Berlin time.
+The Berlin Times is a private, landscape-only TRMNL X newspaper front page. It publishes exactly four concise news briefs with English headlines and summaries at 06:00 and 17:00 Europe/Berlin time.
 
 ```text
 systemd host → GitHub Actions → Exa Search API → GitHub Pages → TRMNL polling → TRMNL X
@@ -60,7 +60,7 @@ Morning searches use `wsj.com`, `nytimes.com`, `ft.com`, `reuters.com`, and `bbc
 
 The morning primary window begins at the preceding Berlin date's nominal 17:00 boundary. A deployed evening edition's actual generation time replaces that boundary only when it belongs to the expected preceding evening and precedes the new run. The evening primary window begins at current Berlin midnight. Both end at the run time plus 30 minutes. A final fallback can query the adjacent half-open interval from the preceding Berlin midnight to the primary start.
 
-When the combined primary result set cannot supply five novel usable stories, one broad primary-window retry rotates away from sources associated with previously displayed URLs, or otherwise from the most represented source. Broad retries keep at least two allowed domains; the targeted Reuters supplement intentionally uses one. A prior-day request runs only when no novel lead exists or novel stories plus valid carry candidates still cannot fill five slots. Transport retries remain separate: connection failures, timeouts, `429`, and `5xx` responses retry the identical body up to three total attempts with bounded backoff and `Retry-After` support.
+When the combined primary result set cannot supply four novel usable stories, one broad primary-window retry rotates away from sources associated with previously displayed URLs, or otherwise from the most represented source. Broad retries keep at least two allowed domains; the targeted Reuters supplement intentionally uses one. A prior-day request runs only when no novel lead exists or novel stories plus valid carry candidates still cannot fill four slots. Transport retries remain separate: connection failures, timeouts, `429`, and `5xx` responses retry the identical body up to three total attempts with bounded backoff and `Retry-After` support.
 
 Each attempt logs credential-free structured fields for edition, attempt, window kind and bounds, domains, returned/usable/novel counts, rejection counts, request ID, and cost. Additional logs report the Reuters target, candidate-wide metadata results, photograph verification counts, final novel and carried counts, provider and category coverage, and `lead_fresh=true`.
 
@@ -68,18 +68,18 @@ Each attempt logs credential-free structured fields for edition, attempt, window
 
 The generator rejects an edition unless it has:
 
-- exactly five unique stories and canonical source URLs;
+- exactly four unique stories and canonical source URLs;
 - at least one novel usable story, kept at index 0 as the non-carried textual lead;
 - non-carried timestamps within the primary or explicit prior-day windows and no timestamp more than 30 minutes in the future;
 - credential-free HTTPS article URLs from the globally recognized provider union, with live results restricted to the active morning or evening profile;
 - English headlines, including translations requested from Exa for German titles;
 - summaries requested from Exa at 40–60 words and normalized to a common maximum of 60 words;
 - exactly one correctly mapped publication source per story;
-- all five stories ranked exactly once for photographic suitability.
+- all four stories ranked exactly once for photographic suitability.
 
-Novel stories always displace carried stories during set selection. When at least one novel story survives, any remaining slots are filled in published order from the single currently deployed `edition.json`; there is no archive or second history source and carried stories have no age limit. The generator verifies photographs across the complete candidate pool before choosing the best valid five-story set that contains a photographed fresh lead. The longest summary among the remaining stories takes the right rail, and the final three retain editorial order. If novel plus valid carry content cannot total five, or no verified fresh lead can anchor a valid set, the deployed edition remains untouched.
+Novel stories always displace carried stories during set selection. When at least one novel story survives, any remaining slots are filled in published order from the single currently deployed `edition.json`; there is no archive or second history source and carried stories have no age limit. The generator verifies photographs across the complete candidate pool before choosing the best valid four-story set that contains a photographed fresh lead. The longest summary among the remaining stories takes the right rail, and the final two retain editorial order. If novel plus valid carry content cannot total four, or no verified fresh lead can anchor a valid set, the deployed edition remains untouched.
 
-Category diversity is a deterministic best-effort selection preference. Provider diversity is a publication requirement: the dominant provider may supply at most three of the five stories. Primary-window candidates outrank prior-day candidates before optional preferences. Research pages are untrusted input. Up to four candidate photographs are checked concurrently. The photo fetcher tries exact-URL Exa metadata and then eligible article Open Graph images with browser-compatible request headers; FT, NYT, and WSJ are metadata-only and are never scraped. It permits HTTPS on port 443 only, rejects credentials and private/reserved addresses, checks every redirect, caps redirect count, download time and bytes, validates image dimensions, decodes under a pixel cap, and rejects low-entropy publisher placeholder artwork before cropping to the template's fixed 560:367 aspect ratio. The accepted image is converted to grayscale and stored as a local compressed JPEG, so a later change to the publisher URL cannot break the displayed edition. The photograph always belongs to the published lead; previous-edition photographs are not reused.
+Category diversity is a deterministic best-effort selection preference. Provider diversity is a publication requirement: the dominant provider may supply at most three of the four stories. Primary-window candidates outrank prior-day candidates before optional preferences. Research pages are untrusted input. Up to four candidate photographs are checked concurrently. The photo fetcher tries exact-URL Exa metadata and then eligible article Open Graph images with browser-compatible request headers; FT, NYT, and WSJ are metadata-only and are never scraped. It permits HTTPS on port 443 only, rejects credentials and private/reserved addresses, checks every redirect, caps redirect count, download time and bytes, validates image dimensions, decodes under a pixel cap, and rejects low-entropy publisher placeholder artwork before cropping to the template's fixed 560:367 aspect ratio. The accepted image is converted to grayscale and stored as a local compressed JPEG, so a later change to the publisher URL cannot break the displayed edition. The photograph always belongs to the published lead; previous-edition photographs are not reused.
 
 ## Plugin preview
 
@@ -112,7 +112,7 @@ docker run --rm --entrypoint /usr/local/bin/ruby \
   trmnl/trmnlp:latest test/layout_test.rb
 ```
 
-It checks five unique articles, headlines, and justified summaries; three lower briefs; one lead-matched image occupying 10–18% of the screen; the 80/20 columns and 50/50 left rows; bottom-aligned brief and rail bylines; the loaded Fraktur masthead; X viewport, dateline, and story bounds; summaries of at least 35px; borderless story modules; and exercised clipping in the maximum-copy fixture. The assertion writes the browser's final 1872×1404 PNG after the layout reaches a stable state; the preceding `trmnlp build` separately verifies 4-bit device rendering. CI repeats this with short, typical, and maximum-budget copy and uploads each result beside its checked-in golden PNG for visual diff review. Golden files are updated intentionally after review, never by CI.
+It checks four unique articles, headlines, and justified summaries; two lower briefs; one lead-matched image occupying 10–18% of the screen; the 80/20 columns and 50/50 left rows; bottom-aligned brief and rail bylines; the loaded Fraktur masthead; X viewport, dateline, and story bounds; 44px lower summaries and summaries of at least 39px elsewhere; borderless story modules; and exercised clipping in the maximum-copy fixture. The assertion writes the browser's final 1872×1404 PNG after the layout reaches a stable state; the preceding `trmnlp build` separately verifies 4-bit device rendering. CI repeats this with short, typical, and maximum-budget copy and uploads each result beside its checked-in golden PNG for visual diff review. Golden files are updated intentionally after review, never by CI.
 
 ## GitHub setup
 
@@ -121,7 +121,7 @@ It checks five unique articles, headlines, and justified summaries; three lower 
 3. In **Settings → Secrets and variables → Actions → Repository secrets**, create `EXA_API_KEY`. Do not create it as a repository variable.
 4. In **Repository variables**, create `BERLIN_TIMES_PUBLIC_BASE_URL` with the credential-free HTTPS Pages base URL, including its trailing slash.
 5. Use a project-scoped key, set project budget alerts, and rotate it after any suspected exposure.
-6. Run **Publish The Berlin Times edition** manually and review all five claims, source links, and the photo before relying on the external scheduler.
+6. Run **Publish The Berlin Times edition** manually and review all four claims, source links, and the photo before relying on the external scheduler.
 
 Only the generator step receives `EXA_API_KEY`. Pull-request CI has no secret access, fork pull requests never invoke edition publication, and the repository does not use `pull_request_target`. Pages deployment permissions are isolated to the deployment job. Publication may take several minutes after a successful run.
 
@@ -161,7 +161,7 @@ GitHub's scheduled event is not used for publication. The ARM-server systemd tim
 
 Half and quadrant mashup templates intentionally show a full-screen-only notice. Portrait rendering is not supported in v1.
 
-When upgrading an existing installation, push the five-story plugin before triggering the first updated generator run, then publish and review the new edition immediately so the polling transition stays brief.
+When upgrading an existing installation, push the four-story plugin before triggering the first updated generator run, then publish and review the new edition immediately so the polling transition stays brief.
 
 ## Operational acceptance
 

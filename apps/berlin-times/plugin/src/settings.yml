@@ -16,5 +16,5 @@ custom_fields:
   description: HTTPS base URL for the Pages site, including the trailing slash.
   placeholder: https://example.github.io/repository/
 name: The Berlin Times
-description: Five concise news briefs
+description: Four concise news briefs
 refresh_interval: 15

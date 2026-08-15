@@ -217,9 +217,9 @@ fn arrange_layout_stories(
     let rail = rail.ok_or_else(|| {
         GeneratorError::Validation("right rail does not match a selected story".into())
     })?;
-    if supporting.len() != 3 {
+    if supporting.len() != 2 {
         return Err(GeneratorError::Validation(
-            "layout requires exactly three supporting stories".into(),
+            "layout requires exactly two supporting stories".into(),
         ));
     }
 
@@ -368,7 +368,7 @@ mod tests {
         let published = serde_json::from_slice::<EditionV1>(
             &tokio::fs::read(output.join("edition.json")).await?,
         )?;
-        assert_eq!(edition.stories.len(), 5);
+        assert_eq!(edition.stories.len(), 4);
         assert_eq!(
             edition.stories.first().map(|story| &story.id),
             Some(&lead_id)
@@ -404,7 +404,6 @@ mod tests {
         assert_eq!(edition.stories[1].id, rail_id);
         assert_eq!(edition.stories[2].id, original_ids[2]);
         assert_eq!(edition.stories[3].id, original_ids[3]);
-        assert_eq!(edition.stories[4].id, original_ids[4]);
         assert!(!edition.stories[0].is_carried);
         Ok(())
     }

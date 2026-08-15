@@ -68,7 +68,7 @@ jobs:
       - name: Validate published interface
         run: |
           test "$(jq '.schema_version' _site/edition.json)" = "1"
-          test "$(jq '.stories | length' _site/edition.json)" = "5"
+          test "$(jq '.stories | length' _site/edition.json)" = "4"
           test "$(jq '.lead_image.story_id == .stories[0].id' _site/edition.json)" = "true"
           test "$(find _site/assets -maxdepth 1 -name 'lead-*.jpg' | wc -l)" = "1"
 

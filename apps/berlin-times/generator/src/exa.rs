@@ -27,7 +27,7 @@ use crate::{
 
 const MAX_ATTEMPTS: usize = 3;
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
-const REQUIRED_STORIES: usize = 5;
+const REQUIRED_STORIES: usize = 4;
 const MAX_STORIES_PER_PROVIDER: usize = 3;
 const MAX_SELECTION_CANDIDATES: usize = 18;
 const REUTERS_DOMAINS: &[&str] = &["reuters.com"];
@@ -822,13 +822,13 @@ fn prepare_research_pool(
     let carried_count = carried.len();
     if candidates.len() + carried_count < REQUIRED_STORIES {
         return Err(GeneratorError::Validation(format!(
-            "only {} novel and {carried_count} carried stories were usable; five are required",
+            "only {} novel and {carried_count} carried stories were usable; four are required",
             candidates.len()
         )));
     }
     select(&candidates, &carried).ok_or_else(|| {
         GeneratorError::Validation(
-            "could not select five stories from at least two providers".into(),
+            "could not select four stories from at least two providers".into(),
         )
     })?;
     Ok(ResearchPool {
@@ -870,7 +870,7 @@ impl ResearchPool {
             })
             .ok_or_else(|| {
                 GeneratorError::NoPhoto(
-                    "no photographed candidate can anchor a valid five-story edition".into(),
+                    "no photographed candidate can anchor a valid four-story edition".into(),
                 )
             })?;
         let ((_, selected, carried_selected), lead_story_id) = selection;
@@ -883,7 +883,7 @@ impl ResearchPool {
         let (_, selected, carried_selected) = select_scored(&self.candidates, &self.carried, None)
             .ok_or_else(|| {
                 GeneratorError::Validation(
-                    "could not select five stories from at least two providers".into(),
+                    "could not select four stories from at least two providers".into(),
                 )
             })?;
         Ok(self.build_research(selected, carried_selected))
@@ -2087,7 +2087,7 @@ mod tests {
             .transpose()?
             .ok_or("contents request must be recorded")?;
         assert_eq!(body["maxAgeHours"], 0);
-        assert_eq!(body["urls"].as_array().map(Vec::len), Some(5));
+        assert_eq!(body["urls"].as_array().map(Vec::len), Some(4));
         Ok(())
     }
 
@@ -2199,7 +2199,7 @@ mod tests {
                 .iter()
                 .any(|story| story.id == photographed_story_id)
         );
-        assert_eq!(edition.stories.len(), 5);
+        assert_eq!(edition.stories.len(), 4);
         Ok(())
     }
 
@@ -2331,14 +2331,14 @@ mod tests {
         let expected_carry_ids = previous
             .stories
             .iter()
-            .take(3)
+            .take(2)
             .map(|story| story.id.clone())
             .collect::<Vec<_>>();
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
         let edition = client.research(now()?, Some(&previous)).await?;
 
-        assert_eq!(edition.stories.len(), 5);
+        assert_eq!(edition.stories.len(), 4);
         assert!(
             edition
                 .stories
@@ -2401,7 +2401,7 @@ mod tests {
         };
         assert_eq!(
             message,
-            "only 2 novel and 1 carried stories were usable; five are required"
+            "only 2 novel and 1 carried stories were usable; four are required"
         );
         Ok(())
     }
@@ -2650,11 +2650,11 @@ mod tests {
     }
 
     #[test]
-    fn selects_five_without_turning_preferences_into_blockers()
+    fn selects_four_without_turning_preferences_into_blockers()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let response = fixture()?;
         let edition = selected(&response)?;
-        assert_eq!(edition.stories.len(), 5);
+        assert_eq!(edition.stories.len(), 4);
         assert!(edition.stories.iter().all(|story| story.sources.len() == 1));
         assert!(edition.stories.iter().all(|story| !story.is_developing));
         assert!(
@@ -2663,7 +2663,7 @@ mod tests {
                 .iter()
                 .all(|story| !story.headline.is_empty())
         );
-        assert_eq!(edition.photo_candidates.len(), 5);
+        assert_eq!(edition.photo_candidates.len(), 4);
         assert_eq!(
             edition.photo_candidates.first(),
             edition
@@ -2676,7 +2676,7 @@ mod tests {
     }
 
     #[test]
-    fn selects_all_novel_when_fewer_than_five_survive()
+    fn selects_all_novel_when_fewer_than_four_survive()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut response = fixture()?;
         response.results.truncate(3);
@@ -2685,7 +2685,7 @@ mod tests {
     }
 
     #[test]
-    fn selects_three_two_provider_split_across_novel_and_carried_stories()
+    fn selects_three_one_provider_split_across_novel_and_carried_stories()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let results = (0..5)
             .map(|index| ExaResult {
@@ -2714,7 +2714,7 @@ mod tests {
             select(&candidates, &carried).ok_or("provider split was not selected")?;
 
         assert_eq!(novel.len(), 3);
-        assert_eq!(selected_carries.len(), 2);
+        assert_eq!(selected_carries.len(), 1);
         assert!(super::provider_split_allowed(&novel, &selected_carries));
         assert!(
             selected_carries
@@ -2725,7 +2725,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_five_story_single_provider_selection()
+    fn rejects_four_story_single_provider_selection()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let results = (0..5)
             .map(|index| ExaResult {
@@ -2870,7 +2870,7 @@ mod tests {
                 .iter()
                 .all(|body| body["contents"]["maxAgeHours"] == 0)
         );
-        assert_eq!(edition.stories.len(), 5);
+        assert_eq!(edition.stories.len(), 4);
         Ok(())
     }
 
@@ -2896,7 +2896,7 @@ mod tests {
             .await
             .ok_or("request recording is disabled")?;
         assert_eq!(requests.len(), 1);
-        assert_eq!(edition.stories.len(), 5);
+        assert_eq!(edition.stories.len(), 4);
         Ok(())
     }
 
@@ -2946,7 +2946,7 @@ mod tests {
         let base = Url::parse(&format!("{}/", server.uri()))?;
         let client = ExaClient::new(reqwest::Client::new(), &base, "test-key")?;
         let edition = client.research(now()?, None).await?;
-        assert_eq!(edition.stories.len(), 5);
+        assert_eq!(edition.stories.len(), 4);
         let requests = server
             .received_requests()
             .await
